@@ -203,21 +203,6 @@ blueprint:
           max: 10
           step: 1
           unit_of_measurement: "°F"
-    
-    # =============================================================================
-    # SCHEDULE
-    # =============================================================================
-    
-    check_interval:
-      name: Check Interval (hours)
-      description: How often to run AI analysis (1 = every hour)
-      default: 1
-      selector:
-        number:
-          min: 1
-          max: 6
-          step: 1
-          unit_of_measurement: "hours"
 
 mode: single
 max_exceeded: silent
@@ -242,13 +227,8 @@ variables:
 
 trigger:
   - platform: time_pattern
-    hours: "/{{ states.input_number.ai_hvac_check_interval.state | int(1) if states.input_number.ai_hvac_check_interval is defined else 1 }}"
+    hours: "/1"
     id: "scheduled_check"
-  
-  # Fallback: check every hour if input_number doesn't exist
-  - platform: time_pattern
-    hours: !input check_interval
-    id: "scheduled_check_fallback"
 
 condition:
   # Only run if mode is not OFF
