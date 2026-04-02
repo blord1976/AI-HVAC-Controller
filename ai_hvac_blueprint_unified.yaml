@@ -210,6 +210,8 @@ max_exceeded: silent
 variables:
   zone_name: !input zone_name
   automation_mode: !input automation_mode
+  action_id_prefix: !input action_id_prefix
+  notification_service: !input notification_service
   thermostat: !input thermostat
   indoor_temp: !input indoor_temp_sensor
   indoor_humidity: !input indoor_humidity_sensor
@@ -384,7 +386,7 @@ action:
           - condition: template
             value_template: "{{ automation_mode == 'monitored' and parsed.action != 'maintain' }}"
         sequence:
-          - service: !input notification_service
+          - service: "{{ notification_service }}"
             data:
               title: "🌡️ AI HVAC ({{ zone_name }})"
               message: >
@@ -400,13 +402,13 @@ action:
                 🌿 ECO Mode Active{% endif %}
               data:
                 actions:
-                  - action: "APPROVE_{{ !input action_id_prefix }}_HVAC"
+                  - action: "APPROVE_{{ action_id_prefix }}_HVAC"
                     title: "✅ Approve"
                     destructive: false
-                  - action: "REJECT_{{ !input action_id_prefix }}_HVAC"
+                  - action: "REJECT_{{ action_id_prefix }}_HVAC"
                     title: "❌ Reject"
                     destructive: true
-                tag: "ai_hvac_{{ !input action_id_prefix | lower }}"
+                tag: "ai_hvac_{{ action_id_prefix | lower }}"
                 push:
                   interruption-level: "active"
           
@@ -414,13 +416,13 @@ action:
           - event: ai_hvac_suggestion_pending
             event_data:
               zone: "{{ zone_name }}"
-              action_id: "{{ !input action_id_prefix }}"
+              action_id: "{{ action_id_prefix }}"
               action_type: "{{ parsed.action }}"
               target_temp: "{{ parsed.temp }}"
               target_mode: "{{ parsed.mode }}"
               reason: "{{ parsed.why }} | {{ parsed.how }}"
               thermostat: "{{ thermostat }}"
-              notification_service: "{{ !input notification_service }}"
+              notification_service: "{{ notification_service }}"
       
       # =================================================================
       # AUTOMATIC MODE - Execute immediately with notification
@@ -437,7 +439,7 @@ action:
                 sequence:
                   - service: climate.set_temperature
                     target:
-                      entity_id: !input thermostat
+                      entity_id: "{{ thermostat }}"
                     data:
                       temperature: "{{ parsed.temp | float }}"
               
@@ -447,7 +449,7 @@ action:
                 sequence:
                   - service: climate.set_hvac_mode
                     target:
-                      entity_id: !input thermostat
+                      entity_id: "{{ thermostat }}"
                     data:
                       hvac_mode: "{{ parsed.mode }}"
               
@@ -457,10 +459,10 @@ action:
                 sequence:
                   - service: climate.turn_off
                     target:
-                      entity_id: !input thermostat
+                      entity_id: "{{ thermostat }}"
           
           # Send info notification
-          - service: !input notification_service
+          - service: "{{ notification_service }}"
             data:
               title: "✅ AI HVAC Auto-Executed ({{ zone_name }})"
               message: >
@@ -471,7 +473,7 @@ action:
                 
                 {{ parsed.why }}{% if context.eco_mode_active %} | 🌿 ECO{% endif %}
               data:
-                tag: "ai_hvac_{{ !input action_id_prefix | lower }}"
+                tag: "ai_hvac_{{ action_id_prefix | lower }}"
                 push:
                   interruption-level: "passive"
           
