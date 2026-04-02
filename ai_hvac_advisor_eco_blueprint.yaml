@@ -1,0 +1,503 @@
+blueprint:
+  name: AI HVAC Advisor with ECO Mode
+  description: >
+    AI-powered HVAC optimization using Gemini AI with occupancy-based ECO mode
+    and actionable iPhone notifications. Supports multiple thermostats by creating
+    multiple automation instances from this blueprint.
+  domain: automation
+  author: Brandon Lord
+  source_url: https://github.com/blord1976/ai-hvac-blueprint
+  
+  input:
+    # Required Entities
+    thermostat:
+      name: Thermostat
+      description: Climate entity to control
+      selector:
+        entity:
+          domain: climate
+    
+    indoor_temp_sensor:
+      name: Indoor Temperature Sensor
+      description: Temperature sensor for this zone
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    
+    ai_agent:
+      name: AI Conversation Agent
+      description: Gemini or other AI conversation agent
+      selector:
+        conversation_agent:
+    
+    notification_service:
+      name: Notification Service
+      description: Mobile app notification service (e.g., mobile_app_brandons_iphone_16_pro)
+      selector:
+        text:
+    
+    occupancy_sensor:
+      name: Occupancy Sensor
+      description: Binary sensor indicating if home is occupied (required for ECO mode)
+      selector:
+        entity:
+          domain: binary_sensor
+    
+    # Optional Entities
+    indoor_humidity_sensor:
+      name: Indoor Humidity Sensor (Optional)
+      description: Humidity sensor for this zone
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+    
+    outdoor_temp_sensor:
+      name: Outdoor Temperature Sensor (Optional)
+      description: Outdoor temperature sensor
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    
+    outdoor_humidity_sensor:
+      name: Outdoor Humidity Sensor (Optional)
+      description: Outdoor humidity sensor
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+    
+    weather_entity:
+      name: Weather Entity (Optional)
+      description: Weather forecast entity
+      default: ""
+      selector:
+        entity:
+          domain: weather
+    
+    door_sensor:
+      name: Door/Window Sensor (Optional)
+      description: Sensor or group indicating open doors/windows
+      default: ""
+      selector:
+        entity:
+    
+    # Input Helpers (must be created manually per zone)
+    enable_boolean:
+      name: Enable Boolean
+      description: input_boolean to enable/disable this automation
+      selector:
+        entity:
+          domain: input_boolean
+    
+    eco_mode_boolean:
+      name: ECO Mode Enable Boolean
+      description: input_boolean to enable/disable ECO mode for this zone
+      selector:
+        entity:
+          domain: input_boolean
+    
+    pending_action_text:
+      name: Pending Action Text
+      description: input_text to store pending action type
+      selector:
+        entity:
+          domain: input_text
+    
+    pending_temp_text:
+      name: Pending Temperature Text
+      description: input_text to store pending temperature
+      selector:
+        entity:
+          domain: input_text
+    
+    pending_mode_text:
+      name: Pending Mode Text
+      description: input_text to store pending HVAC mode
+      selector:
+        entity:
+          domain: input_text
+    
+    pending_reason_text:
+      name: Pending Reason Text
+      description: input_text to store pending reason/explanation
+      selector:
+        entity:
+          domain: input_text
+    
+    approval_counter:
+      name: Approval Counter
+      description: counter to track approvals
+      selector:
+        entity:
+          domain: counter
+    
+    rejection_counter:
+      name: Rejection Counter
+      description: counter to track rejections
+      selector:
+        entity:
+          domain: counter
+    
+    eco_cooling_offset:
+      name: ECO Cooling Offset
+      description: input_number for ECO mode cooling offset (°F)
+      selector:
+        entity:
+          domain: input_number
+    
+    eco_heating_offset:
+      name: ECO Heating Offset
+      description: input_number for ECO mode heating offset (°F)
+      selector:
+        entity:
+          domain: input_number
+    
+    # Configuration Options
+    zone_name:
+      name: Zone Name
+      description: Display name for this zone (e.g., "Living Room", "Upstairs")
+      default: "Zone"
+      selector:
+        text:
+    
+    notification_action_approve:
+      name: Approval Action ID
+      description: Unique action ID for approve button (e.g., APPROVE_LR_HVAC)
+      default: "APPROVE_HVAC"
+      selector:
+        text:
+    
+    notification_action_reject:
+      name: Rejection Action ID
+      description: Unique action ID for reject button (e.g., REJECT_LR_HVAC)
+      default: "REJECT_HVAC"
+      selector:
+        text:
+    
+    min_temperature:
+      name: Minimum Temperature
+      description: Minimum allowed temperature (°F)
+      default: 60
+      selector:
+        number:
+          min: 50
+          max: 75
+          step: 1
+          unit_of_measurement: "°F"
+    
+    max_temperature:
+      name: Maximum Temperature
+      description: Maximum allowed temperature (°F)
+      default: 85
+      selector:
+        number:
+          min: 70
+          max: 95
+          step: 1
+          unit_of_measurement: "°F"
+    
+    max_temp_change:
+      name: Maximum Temperature Change
+      description: Maximum temperature change per suggestion (°F)
+      default: 4
+      selector:
+        number:
+          min: 1
+          max: 10
+          step: 1
+          unit_of_measurement: "°F"
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  # Run every hour on the hour
+  - platform: time_pattern
+    hours: "/1"
+
+condition:
+  # Only run if enabled
+  - condition: state
+    entity_id: !input enable_boolean
+    state: "on"
+
+action:
+  # Step 1: Gather HVAC context
+  - variables:
+      zone_name: !input zone_name
+      thermostat: !input thermostat
+      indoor_temp: !input indoor_temp_sensor
+      indoor_humidity: !input indoor_humidity_sensor
+      outdoor_temp: !input outdoor_temp_sensor
+      outdoor_humidity: !input outdoor_humidity_sensor
+      weather: !input weather_entity
+      occupancy: !input occupancy_sensor
+      doors: !input door_sensor
+      eco_mode_enabled: !input eco_mode_boolean
+      eco_cooling_offset: !input eco_cooling_offset
+      eco_heating_offset: !input eco_heating_offset
+      min_temp: !input min_temperature
+      max_temp: !input max_temperature
+      max_change: !input max_temp_change
+      
+      context_data:
+        timestamp: "{{ now().isoformat() }}"
+        zone: "{{ zone_name }}"
+        
+        # Indoor conditions
+        indoor_temp_value: "{{ states(indoor_temp) | float(70) }}"
+        indoor_humidity_value: >
+          {% if indoor_humidity != "" %}
+            {{ states(indoor_humidity) | float(50) }}
+          {% else %}
+            N/A
+          {% endif %}
+        thermostat_target: "{{ state_attr(thermostat, 'temperature') | float(70) }}"
+        thermostat_mode: "{{ states(thermostat) }}"
+        hvac_action: "{{ state_attr(thermostat, 'hvac_action') }}"
+        
+        # Outdoor conditions
+        outdoor_temp_value: >
+          {% if outdoor_temp != "" %}
+            {{ states(outdoor_temp) | float(70) }}
+          {% else %}
+            N/A
+          {% endif %}
+        outdoor_humidity_value: >
+          {% if outdoor_humidity != "" %}
+            {{ states(outdoor_humidity) | float(50) }}
+          {% else %}
+            N/A
+          {% endif %}
+        
+        # Weather forecast
+        weather_condition: >
+          {% if weather != "" %}
+            {{ states(weather) }}
+          {% else %}
+            N/A
+          {% endif %}
+        forecast_high: >
+          {% if weather != "" and state_attr(weather, 'forecast') %}
+            {{ state_attr(weather, 'forecast')[0].temperature }}
+          {% else %}
+            N/A
+          {% endif %}
+        forecast_condition: >
+          {% if weather != "" and state_attr(weather, 'forecast') %}
+            {{ state_attr(weather, 'forecast')[0].condition }}
+          {% else %}
+            N/A
+          {% endif %}
+        
+        # Occupancy & ECO mode
+        home_occupied: "{{ is_state(occupancy, 'on') }}"
+        eco_mode_active: "{{ is_state(eco_mode_enabled, 'on') }}"
+        eco_cooling_offset_value: "{{ states(eco_cooling_offset) | float(5) }}"
+        eco_heating_offset_value: "{{ states(eco_heating_offset) | float(5) }}"
+        
+        # Doors status
+        doors_open: >
+          {% if doors != "" %}
+            {{ states(doors) != '0' and states(doors) != 'unknown' }}
+          {% else %}
+            false
+          {% endif %}
+        
+        # Temperature bounds
+        min_allowed_temp: "{{ min_temp }}"
+        max_allowed_temp: "{{ max_temp }}"
+        max_allowed_change: "{{ max_change }}"
+  
+  # Step 2: Call AI for analysis
+  - service: conversation.process
+    data:
+      text: |
+        You are an expert HVAC optimization system. Analyze current conditions and provide ONE specific recommendation if changes would improve comfort or efficiency.
+        
+        CURRENT CONDITIONS:
+        Zone: {{ context_data.zone }}
+        
+        Indoor:
+        - Temperature: {{ context_data.indoor_temp_value }}°F (thermostat target: {{ context_data.thermostat_target }}°F)
+        {% if context_data.indoor_humidity_value != "N/A" -%}
+        - Humidity: {{ context_data.indoor_humidity_value }}%
+        {% endif -%}
+        - Thermostat mode: {{ context_data.thermostat_mode }}
+        - HVAC status: {{ context_data.hvac_action }}
+        
+        Outdoor:
+        {% if context_data.outdoor_temp_value != "N/A" -%}
+        - Temperature: {{ context_data.outdoor_temp_value }}°F
+        {% endif -%}
+        {% if context_data.outdoor_humidity_value != "N/A" -%}
+        - Humidity: {{ context_data.outdoor_humidity_value }}%
+        {% endif -%}
+        {% if context_data.weather_condition != "N/A" -%}
+        - Current: {{ context_data.weather_condition }}
+        {% endif -%}
+        {% if context_data.forecast_condition != "N/A" -%}
+        - Forecast: {{ context_data.forecast_condition }}, high {{ context_data.forecast_high }}°F
+        {% endif %}
+        
+        Status:
+        - Home occupied: {% if context_data.home_occupied %}Yes{% else %}No{% endif %}
+        - ECO mode enabled: {% if context_data.eco_mode_active %}Yes{% else %}No{% endif %}
+        {% if context_data.doors_open -%}
+        - Doors: OPEN
+        {% else -%}
+        - Doors: Closed
+        {% endif %}
+        
+        ECO MODE RULES:
+        {% if context_data.eco_mode_active and not context_data.home_occupied -%}
+        - Home is UNOCCUPIED - apply ECO setbacks:
+          - If cooling: suggest {{ context_data.thermostat_target + context_data.eco_cooling_offset_value }}°F (target + {{ context_data.eco_cooling_offset_value }}°F)
+          - If heating: suggest {{ context_data.thermostat_target - context_data.eco_heating_offset_value }}°F (target - {{ context_data.eco_heating_offset_value }}°F)
+        - Prioritize energy savings over comfort
+        {% else -%}
+        - Normal mode - optimize for comfort and efficiency
+        {% endif %}
+        
+        RESPONSE FORMAT (use EXACTLY this format):
+        ACTION: [maintain|adjust_temp|change_mode|turn_off]
+        TARGET_TEMP: [number between {{ context_data.min_allowed_temp }}-{{ context_data.max_allowed_temp }} or "N/A"]
+        TARGET_MODE: [heat|cool|heat_cool|off or "N/A"]
+        WHY: [One sentence: what issue or opportunity exists]
+        HOW: [One sentence: how this change helps]
+        CONFIDENCE: [0-100]
+        
+        RULES:
+        - If conditions optimal, respond: ACTION: maintain
+        - Temperature must be {{ context_data.min_allowed_temp }}-{{ context_data.max_allowed_temp }}°F
+        - Don't change temp more than {{ context_data.max_allowed_change }}°F from current
+        - If doors open, suggest: ACTION: turn_off
+        - Keep explanations brief and factual
+        - In ECO mode when away, prioritize energy savings
+        - When home occupied, prioritize comfort first, then efficiency
+      agent_id: !input ai_agent
+    response_variable: ai_response
+  
+  # Step 3: Parse AI response
+  - variables:
+      ai_text: "{{ ai_response.response.speech.plain.speech }}"
+      action_type: >
+        {% set lines = ai_text.split('\n') %}
+        {% for line in lines %}
+          {% if 'ACTION:' in line %}
+            {{ line.split('ACTION:')[1].strip() }}
+          {% endif %}
+        {% endfor %}
+      target_temp: >
+        {% set lines = ai_text.split('\n') %}
+        {% for line in lines %}
+          {% if 'TARGET_TEMP:' in line %}
+            {{ line.split('TARGET_TEMP:')[1].strip().replace('N/A', '70') }}
+          {% endif %}
+        {% endfor %}
+      target_mode: >
+        {% set lines = ai_text.split('\n') %}
+        {% for line in lines %}
+          {% if 'TARGET_MODE:' in line %}
+            {{ line.split('TARGET_MODE:')[1].strip().replace('N/A', 'heat_cool') }}
+          {% endif %}
+        {% endfor %}
+      why_reason: >
+        {% set lines = ai_text.split('\n') %}
+        {% for line in lines %}
+          {% if 'WHY:' in line %}
+            {{ line.split('WHY:')[1].strip() }}
+          {% endif %}
+        {% endfor %}
+      how_helps: >
+        {% set lines = ai_text.split('\n') %}
+        {% for line in lines %}
+          {% if 'HOW:' in line %}
+            {{ line.split('HOW:')[1].strip() }}
+          {% endif %}
+        {% endfor %}
+      confidence: >
+        {% set lines = ai_text.split('\n') %}
+        {% for line in lines %}
+          {% if 'CONFIDENCE:' in line %}
+            {{ line.split('CONFIDENCE:')[1].strip() }}
+          {% endif %}
+        {% endfor %}
+  
+  # Step 4: Log the suggestion
+  - service: logbook.log
+    data:
+      name: "AI HVAC Advisor ({{ zone_name }})"
+      message: >
+        {% if action_type == 'maintain' %}
+        No changes - conditions optimal
+        {% else %}
+        Suggestion: {{ action_type }} | Target: {{ target_temp }}°F {{ target_mode }} | Why: {{ why_reason }} | How: {{ how_helps }} | Confidence: {{ confidence }}%
+        {% if context_data.eco_mode_active and not context_data.home_occupied %} | ECO MODE ACTIVE{% endif %}
+        {% endif %}
+  
+  # Step 5: Send notification if AI suggests change
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ action_type not in ['maintain', 'none'] }}"
+        sequence:
+          # Send actionable notification
+          - service: !input notification_service
+            data:
+              title: "🌡️ AI HVAC ({{ zone_name }})"
+              message: >
+                {% if action_type == 'adjust_temp' %}
+                Set thermostat to {{ target_temp }}°F
+                {% elif action_type == 'change_mode' %}
+                Switch to {{ target_mode }} mode
+                {% elif action_type == 'turn_off' %}
+                Turn off HVAC
+                {% else %}
+                {{ action_type | title }}
+                {% endif %}
+                
+                Why: {{ why_reason }}
+                
+                How: {{ how_helps }}
+                
+                {% if context_data.eco_mode_active and not context_data.home_occupied %}🌿 ECO Mode Active{% endif %}
+              data:
+                actions:
+                  - action: !input notification_action_approve
+                    title: "✅ Approve"
+                  - action: !input notification_action_reject
+                    title: "❌ Reject"
+                push:
+                  interruption-level: "active"
+          
+          # Store suggestion for execution
+          - service: input_text.set_value
+            target:
+              entity_id: !input pending_action_text
+            data:
+              value: "{{ action_type }}"
+          
+          - service: input_text.set_value
+            target:
+              entity_id: !input pending_temp_text
+            data:
+              value: "{{ target_temp }}"
+          
+          - service: input_text.set_value
+            target:
+              entity_id: !input pending_mode_text
+            data:
+              value: "{{ target_mode }}"
+          
+          - service: input_text.set_value
+            target:
+              entity_id: !input pending_reason_text
+            data:
+              value: "{{ why_reason }} | {{ how_helps }}"
