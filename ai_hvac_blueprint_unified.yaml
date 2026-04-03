@@ -231,6 +231,11 @@ trigger:
   - platform: time_pattern
     hours: "/1"
     id: "scheduled_check"
+  
+  # Immediate check when occupancy changes (home ↔ away)
+  - platform: state
+    entity_id: !input occupancy_sensor
+    id: "occupancy_change"
 
 condition:
   # Only run if mode is not OFF
@@ -244,6 +249,12 @@ action:
         timestamp: "{{ now().isoformat() }}"
         zone: "{{ zone_name }}"
         mode: "{{ automation_mode }}"
+        trigger_reason: >
+          {% if trigger.id == 'occupancy_change' %}
+            Occupancy changed to {{ 'OCCUPIED' if is_state(occupancy, 'on') else 'UNOCCUPIED' }}
+          {% else %}
+            Scheduled hourly check
+          {% endif %}
         
         # Indoor conditions
         indoor_temp: "{{ states(indoor_temp) | float(70) }}"
@@ -304,6 +315,7 @@ action:
         {% if context.forecast_condition != "N/A" -%}- Forecast: {{ context.forecast_condition }}, high {{ context.forecast_high }}°F{% endif %}
         
         STATUS:
+        - Trigger: {{ context.trigger_reason }}
         - Home: {% if context.home_occupied %}OCCUPIED{% else %}UNOCCUPIED{% endif %}
         - ECO Mode: {% if context.eco_mode_active %}ACTIVE{% else %}INACTIVE{% endif %}
         - Doors: {% if context.doors_open %}OPEN{% else %}Closed{% endif %}
