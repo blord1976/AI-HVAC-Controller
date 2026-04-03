@@ -36,9 +36,9 @@ blueprint:
     
     notification_service:
       name: Notification Service
-      description: Mobile app notification service
+      description: "Mobile app notification service (e.g., notify.mobile_app_your_phone). Find yours in Developer Tools → Services → notify"
       selector:
-        notify:
+        text:
     
     occupancy_sensor:
       name: Occupancy Sensor
