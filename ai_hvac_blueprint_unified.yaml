@@ -36,9 +36,9 @@ blueprint:
     
     notification_service:
       name: Notification Service
-      description: Mobile app notification service (e.g., notify.mobile_app_your_phone)
+      description: Mobile app notification service
       selector:
-        text:
+        notify:
     
     occupancy_sensor:
       name: Occupancy Sensor
