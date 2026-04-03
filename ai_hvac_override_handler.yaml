@@ -1,0 +1,251 @@
+# ============================================================================
+# AI HVAC - Universal Override Handler with Learning System
+# ============================================================================
+# 
+# This automation handles user overrides from ALL AI HVAC zones.
+# Install ONCE - it works for Living Room, Upstairs, and any future zones.
+#
+# Features:
+# - Parses natural language commands using Gemini AI
+# - Executes parsed commands on thermostats
+# - Stores learning data for future AI improvements
+# - Sends confirmation notifications
+#
+# Required Setup:
+# 1. Install this automation (add to automations.yaml or via UI)
+# 2. Create learning storage helpers (see README for instructions)
+# 3. AI HVAC blueprint must be in MONITORED mode with Override button
+#
+# ============================================================================
+
+automation:
+  - id: ai_hvac_universal_override_handler
+    alias: "AI HVAC - Universal Override Handler"
+    description: "Handles override commands from all AI HVAC zones with learning"
+    mode: queued
+    max: 10
+    
+    trigger:
+      # Trigger on ANY mobile app notification action
+      - platform: event
+        event_type: mobile_app_notification_action
+    
+    condition:
+      # Only handle OVERRIDE actions (pattern: OVERRIDE_*_HVAC)
+      - condition: template
+        value_template: >
+          {{ trigger.event.data.action is defined and 
+             'OVERRIDE_' in trigger.event.data.action and 
+             '_HVAC' in trigger.event.data.action }}
+    
+    action:
+      # Step 1: Extract action details and user input
+      - variables:
+          action_pressed: "{{ trigger.event.data.action }}"
+          # Extract zone ID from action (e.g., OVERRIDE_LR_HVAC -> LR)
+          zone_id: >
+            {{ action_pressed.replace('OVERRIDE_', '').replace('_HVAC', '') }}
+          # Get user's text input from notification reply
+          user_command: >
+            {{ trigger.event.data.action_data.reply_text | default('') }}
+      
+      # Step 2: Validate we have user input
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ user_command == '' }}"
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  title: "AI HVAC Override Error"
+                  message: "No command text provided. Please try again with a command like 'set to 72°F'."
+              - stop: "No user command provided"
+      
+      # Step 3: Use Gemini AI to parse the natural language command
+      - service: conversation.process
+        data:
+          text: |
+            Parse this HVAC command into structured data:
+            
+            User command: "{{ user_command }}"
+            
+            Return ONLY valid JSON (no markdown, no explanation):
+            {
+              "action": "adjust_temp|change_mode|turn_off|maintain",
+              "temperature": 72,
+              "mode": "cool|heat|heat_cool|off",
+              "confidence": 95
+            }
+            
+            Rules:
+            - action: "adjust_temp" if changing temperature
+            - action: "change_mode" if changing HVAC mode only
+            - action: "turn_off" if turning off HVAC
+            - action: "maintain" if unclear/no change requested
+            - temperature: numeric value if specified, otherwise null
+            - mode: HVAC mode if specified, otherwise null
+            - confidence: 0-100 based on clarity of command
+            
+            Examples:
+            "set to 78" -> {"action": "adjust_temp", "temperature": 78, "mode": null, "confidence": 95}
+            "switch to heat mode" -> {"action": "change_mode", "temperature": null, "mode": "heat", "confidence": 90}
+            "turn it off" -> {"action": "turn_off", "temperature": null, "mode": null, "confidence": 100}
+            "make it 72 and use auto" -> {"action": "adjust_temp", "temperature": 72, "mode": "heat_cool", "confidence": 85}
+          agent_id: google_generative_ai
+        response_variable: ai_parse_response
+      
+      # Step 4: Parse AI response (strip markdown if present)
+      - variables:
+          ai_response_text: "{{ ai_parse_response.response.speech.plain.speech }}"
+          # Strip markdown code fences if AI included them
+          cleaned_json: >
+            {{ ai_response_text.replace('```json', '').replace('```', '').strip() }}
+          # Parse JSON
+          parsed_command: "{{ cleaned_json | from_json }}"
+      
+      # Step 5: Log the parsed command
+      - service: logbook.log
+        data:
+          name: "AI HVAC Override ({{ zone_id }})"
+          message: >
+            User: "{{ user_command }}" | 
+            Parsed: {{ parsed_command.action }} 
+            {% if parsed_command.temperature %}{{ parsed_command.temperature }}°F{% endif %}
+            {% if parsed_command.mode %}{{ parsed_command.mode }}{% endif %}
+            | Confidence: {{ parsed_command.confidence }}%
+      
+      # Step 6: Check confidence level
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ parsed_command.confidence | int(0) < 60 }}"
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  title: "AI HVAC - Command Unclear ({{ zone_id }})"
+                  message: |
+                    I'm not confident I understood your command: "{{ user_command }}"
+                    
+                    I parsed it as: {{ parsed_command.action }}
+                    {% if parsed_command.temperature %}Temperature: {{ parsed_command.temperature }}°F{% endif %}
+                    {% if parsed_command.mode %}Mode: {{ parsed_command.mode }}{% endif %}
+                    
+                    Confidence: {{ parsed_command.confidence }}%
+                    
+                    Please try again with a clearer command like:
+                    - "set to 72"
+                    - "switch to heat mode"
+                    - "turn off the HVAC"
+              - stop: "Low confidence parse"
+      
+      # Step 7: Get thermostat entity from pending event data
+      # (This requires the blueprint to fire ai_hvac_suggestion_pending event)
+      - variables:
+          # Look up the most recent pending event for this zone
+          thermostat_entity: >
+            {{ states['input_text']['ai_hvac_' + zone_id | lower + '_pending_thermostat'] | default('') }}
+      
+      # Step 8: Validate we have thermostat entity
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ thermostat_entity == '' }}"
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  title: "AI HVAC Override Error ({{ zone_id }})"
+                  message: "Could not find thermostat for zone {{ zone_id }}. Please check configuration."
+              - stop: "No thermostat found"
+      
+      # Step 9: Execute the parsed command
+      - choose:
+          # Adjust Temperature
+          - conditions:
+              - condition: template
+                value_template: "{{ parsed_command.action == 'adjust_temp' and parsed_command.temperature is not none }}"
+            sequence:
+              - service: climate.set_temperature
+                target:
+                  entity_id: "{{ thermostat_entity }}"
+                data:
+                  temperature: "{{ parsed_command.temperature | float }}"
+              
+              # Also set mode if specified
+              - choose:
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ parsed_command.mode is not none }}"
+                    sequence:
+                      - service: climate.set_hvac_mode
+                        target:
+                          entity_id: "{{ thermostat_entity }}"
+                        data:
+                          hvac_mode: "{{ parsed_command.mode }}"
+          
+          # Change Mode Only
+          - conditions:
+              - condition: template
+                value_template: "{{ parsed_command.action == 'change_mode' and parsed_command.mode is not none }}"
+            sequence:
+              - service: climate.set_hvac_mode
+                target:
+                  entity_id: "{{ thermostat_entity }}"
+                data:
+                  hvac_mode: "{{ parsed_command.mode }}"
+          
+          # Turn Off
+          - conditions:
+              - condition: template
+                value_template: "{{ parsed_command.action == 'turn_off' }}"
+            sequence:
+              - service: climate.turn_off
+                target:
+                  entity_id: "{{ thermostat_entity }}"
+          
+          # Maintain / No Action
+          - conditions:
+              - condition: template
+                value_template: "{{ parsed_command.action == 'maintain' }}"
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  title: "AI HVAC - No Action ({{ zone_id }})"
+                  message: |
+                    Your command "{{ user_command }}" didn't specify a clear action.
+                    
+                    Try commands like:
+                    - "set to 72°F"
+                    - "switch to auto mode"
+                    - "turn off"
+              - stop: "No action to execute"
+      
+      # Step 10: Store learning data
+      - service: input_text.set_value
+        target:
+          entity_id: "input_text.ai_hvac_{{ zone_id | lower }}_learning_log"
+        data:
+          value: >
+            {{ states('input_text.ai_hvac_' + zone_id | lower + '_learning_log') }}
+            {{ now().isoformat() }}|{{ user_command }}|{{ parsed_command.action }}|{{ parsed_command.temperature }}|{{ parsed_command.mode }};
+      
+      # Step 11: Send confirmation notification
+      - service: "notify.mobile_app_brandons_iphone_16_pro"
+        data:
+          title: "✅ AI HVAC Override Executed ({{ zone_id }})"
+          message: >
+            {% if parsed_command.action == 'adjust_temp' %}
+            Set to {{ parsed_command.temperature }}°F
+            {% if parsed_command.mode %} in {{ parsed_command.mode }} mode{% endif %}
+            {% elif parsed_command.action == 'change_mode' %}
+            Switched to {{ parsed_command.mode }} mode
+            {% elif parsed_command.action == 'turn_off' %}
+            Turned off HVAC
+            {% endif %}
+            
+            From: "{{ user_command }}"
+            
+            🧠 Preference learned for future suggestions
+          data:
+            tag: "ai_hvac_override_{{ zone_id | lower }}"
+            push:
+              interruption-level: "passive"
