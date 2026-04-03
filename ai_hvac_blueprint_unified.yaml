@@ -408,6 +408,11 @@ action:
                   - action: "REJECT_{{ action_id_prefix }}_HVAC"
                     title: "❌ Reject"
                     destructive: true
+                  - action: "OVERRIDE_{{ action_id_prefix }}_HVAC"
+                    title: "🔧 Override"
+                    behavior: "textInput"
+                    textInputButtonTitle: "Send"
+                    textInputPlaceholder: "e.g., set to 72°F"
                 tag: "ai_hvac_{{ action_id_prefix | lower }}"
                 push:
                   interruption-level: "active"
