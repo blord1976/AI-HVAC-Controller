@@ -93,6 +93,31 @@ blueprint:
       selector:
         entity:
     
+    # Thermal Comfort Integration (Optional)
+    heat_index_sensor:
+      name: Heat Index Sensor (Optional)
+      description: Thermal comfort heat index sensor - "feels like" temperature
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    
+    dew_point_sensor:
+      name: Dew Point Sensor (Optional)
+      description: Thermal comfort dew point sensor - humidity comfort indicator
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    
+    thermal_perception_sensor:
+      name: Thermal Perception Sensor (Optional)
+      description: Thermal comfort perception sensor - descriptive comfort level
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    
     # =============================================================================
     # AUTOMATION MODE - Control behavior
     # =============================================================================
@@ -133,6 +158,25 @@ blueprint:
       default: "ZONE"
       selector:
         text:
+    
+    # =============================================================================
+    # CUSTOM AI RULES (OPTIONAL)
+    # =============================================================================
+    
+    custom_rules:
+      name: Custom AI Rules (Optional)
+      description: >
+        Add your own rules and preferences for the AI to follow. 
+        Each rule should be on a new line. Examples:
+        - Do not change to Auto mode in Summer, Spring, or Fall
+        - Do not set AC higher than 78°F
+        - Never adjust temperature by more than 3 degrees at once
+        - Prioritize energy savings over comfort when home is unoccupied
+      default: ""
+      selector:
+        text:
+          multiline: true
+          multiple: false
     
     # =============================================================================
     # ECO MODE SETTINGS
@@ -220,12 +264,16 @@ variables:
   weather: !input weather_entity
   occupancy: !input occupancy_sensor
   doors: !input door_sensor
+  heat_index: !input heat_index_sensor
+  dew_point: !input dew_point_sensor
+  thermal_perception: !input thermal_perception_sensor
   eco_enabled: !input eco_mode_enabled
   eco_cooling: !input eco_cooling_offset
   eco_heating: !input eco_heating_offset
   min_temp: !input min_temperature
   max_temp: !input max_temperature
   max_change: !input max_temp_change
+  custom_rules: !input custom_rules
 
 trigger:
   - platform: time_pattern
@@ -263,6 +311,14 @@ action:
         thermostat_target: "{{ state_attr(thermostat, 'temperature') | float(70) }}"
         thermostat_mode: "{{ states(thermostat) }}"
         hvac_action: "{{ state_attr(thermostat, 'hvac_action') }}"
+        
+        # Thermal Comfort
+        feels_like: >
+          {% if heat_index != "" and states(heat_index) not in ['unknown', 'unavailable', 'none'] %}{{ states(heat_index) | float(0) }}{% else %}N/A{% endif %}
+        dew_point: >
+          {% if dew_point != "" and states(dew_point) not in ['unknown', 'unavailable', 'none'] %}{{ states(dew_point) | float(0) }}{% else %}N/A{% endif %}
+        thermal_perception: >
+          {% if thermal_perception != "" and states(thermal_perception) not in ['unknown', 'unavailable', 'none'] %}{{ states(thermal_perception) }}{% else %}N/A{% endif %}
         
         # Outdoor conditions
         outdoor_temp: >
@@ -305,6 +361,9 @@ action:
         INDOOR:
         - Temperature: {{ context.indoor_temp }}°F (target: {{ context.thermostat_target }}°F)
         {% if context.indoor_humidity != "N/A" -%}- Humidity: {{ context.indoor_humidity }}%{% endif %}
+        {% if context.feels_like != "N/A" -%}- Feels Like: {{ context.feels_like }}°F{% endif %}
+        {% if context.dew_point != "N/A" -%}- Dew Point: {{ context.dew_point }}°F{% endif %}
+        {% if context.thermal_perception != "N/A" -%}- Comfort Level: {{ context.thermal_perception }}{% endif %}
         - Thermostat: {{ context.thermostat_mode }}
         - HVAC: {{ context.hvac_action }}
         
@@ -339,11 +398,18 @@ action:
         CONFIDENCE: [0-100]
         
         RULES:
+        - Prioritize "Feels Like" temp over actual temp when available
+        - Dew point <60°F = comfortable, >65°F = sticky/uncomfortable
         - Optimal conditions → ACTION: maintain
         - Temperature range: {{ context.min_allowed }}-{{ context.max_allowed }}°F
         - Max change: ±{{ context.max_change_allowed }}°F
         - Doors open → ACTION: turn_off
         - Brief explanations only
+        {% if custom_rules | length > 0 %}
+        
+        CUSTOM USER RULES (HIGH PRIORITY):
+        {{ custom_rules }}
+        {% endif %}
       agent_id: !input ai_agent
     response_variable: ai_response
   
