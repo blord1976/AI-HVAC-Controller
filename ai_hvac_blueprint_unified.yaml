@@ -6,7 +6,7 @@ blueprint:
     Deploy once per thermostat - create multiple automations from this blueprint for multi-zone control.
   domain: automation
   author: Brandon Lord
-  source_url: https://github.com/blord1976/ai-hvac-blueprint
+  source_url: https://github.com/blord1976/AI-HVAC-Controller
   
   input:
     # =============================================================================

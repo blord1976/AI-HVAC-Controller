@@ -1,372 +1,288 @@
-# AI HVAC Override + Learning System
+# AI HVAC Controller
 
-**Phase 1 MVP** - User override commands with AI-powered natural language parsing and basic learning system.
+AI-powered Home Assistant HVAC optimization using Gemini (or any `conversation` agent), per-zone policy profiles, template-enforced safety, and optional MONITORED mode with notification overrides.
+
+**Repository:** [github.com/blord1976/AI-HVAC-Controller](https://github.com/blord1976/AI-HVAC-Controller)
 
 ---
 
-## 🎯 What This Does
+## Features
 
-Adds a third button to your AI HVAC notifications that lets you **override** the AI's suggestion with your own command using natural language:
+- **AI advisor** — Hourly analysis of indoor/outdoor conditions, weather, and occupancy
+- **Zone policies** — Separate rule profiles for **Living Room** and **Upstairs** (mode thresholds, nighttime setpoints, ECO behavior)
+- **Template safety (L1 + L3)** — Required HVAC mode, setpoint floors/ceilings, max change per run, and skip-if-comfortable run *before/after* the AI (not prompt-only)
+- **Thermal comfort** — Optional heat index (“feels-like”) and dew point sensors
+- **ECO mode** — Setbacks when home is unoccupied (via your occupancy helper)
+- **Three automation modes** — OFF, **AUTOMATIC** (default), MONITORED (approval + override buttons)
+- **Multi-zone** — One blueprint; create one automation per thermostat
 
-**Before (2 buttons):**
+---
+
+## Repository files
+
+| File | Purpose |
+|------|---------|
+| [`ai_hvac_blueprint_unified.yaml`](ai_hvac_blueprint_unified.yaml) | Main blueprint — import into Home Assistant |
+| [`ai_hvac_override_handler.yaml`](ai_hvac_override_handler.yaml) | Optional: natural-language override from notifications (MONITORED mode) |
+| [`ZONE-RULES-IMPLEMENTATION.md`](ZONE-RULES-IMPLEMENTATION.md) | Detailed rule map, entity wiring, future triggers/helpers |
+| `README.md` | This guide |
+
+---
+
+## Quick start (per zone, ~10 minutes)
+
+### 1. Import the blueprint
+
+**Settings → Automations & Scenes → Blueprints → Import Blueprint**
+
 ```
-AI: "Turn off HVAC - doors are open"
-You: [Approve] [Reject]
+https://raw.githubusercontent.com/blord1976/AI-HVAC-Controller/main/ai_hvac_blueprint_unified.yaml
 ```
 
-**After (3 buttons):**
+Or upload `ai_hvac_blueprint_unified.yaml` from this repo.
+
+### 2. Create an automation from the blueprint
+
+**Settings → Automations → Create Automation → AI HVAC Advisor**
+
+Create **one automation per zone** (e.g. Living Room and Upstairs). Each must use a **unique Action ID Prefix** (`LR`, `UPSTAIRS`, etc.).
+
+### 3. Recommended configuration
+
+| Setting | Living Room | Upstairs |
+|---------|-------------|----------|
+| **Zone policy profile** | Living Room | Upstairs |
+| **Thermostat** | `climate.lr_stat` (or your Ezlo entity) | `climate.upstairs_stat` |
+| **Home occupancy** | `input_boolean.anyone_home` | `input_boolean.anyone_home` |
+| **Zone occupancy** (optional) | — | `binary_sensor.upstairs_occupancy_status` |
+| **Feels-like sensor** | `sensor.lr_thermal_comfort_heat_index` | `sensor.upstairs_thermal_comfort_heat_index` |
+| **Dew point sensor** | `sensor.lr_thermal_comfort_dew_point` | `sensor.upstairs_thermal_comfort_dew_point` |
+| **Automation mode** | **AUTOMATIC** (recommended) | **AUTOMATIC** |
+| **ECO mode** | Enabled (adjust offsets as desired) | Enabled |
+
+Replace entity IDs with yours if different. See [ZONE-RULES-IMPLEMENTATION.md](ZONE-RULES-IMPLEMENTATION.md) for the full wiring table and rule breakdown.
+
+### 4. Ezlo / Z-Wave thermostats
+
+- Supported modes are typically: `off`, `heat`, `cool`, `heat_cool`
+- **“Auto” in zone rules** = Home Assistant mode **`heat_cool`**
+- When occupied, the policy uses **heat or cool only** (not `heat_cool`)
+- When away (ECO), **`heat_cool`** is allowed for basic protection
+
+### 5. Test
+
+1. Enable the automation and wait for the next hourly run, or run it manually.
+2. **Settings → System → Logs** — search `AI HVAC`
+3. **Logbook** — filter by zone name
+4. In AUTOMATIC mode, changes execute immediately with a passive notification
+
+---
+
+## Zone policy summary
+
+Policies are enforced in **templates** and summarized again in the **AI prompt**. Full detail: [ZONE-RULES-IMPLEMENTATION.md](ZONE-RULES-IMPLEMENTATION.md).
+
+### Living Room
+
+| Topic | Rule |
+|-------|------|
+| **Occupied mode** | Heat or cool only (never auto/`heat_cool`) |
+| **Summer** | Outdoor > 75°F → cool |
+| **Winter** | Outdoor < 55°F → heat |
+| **Forecast** | High > 70°F → cool; high < 60°F → heat |
+| **Night (11pm+)** | Setpoint **never below 74°F** |
+| **Away (ECO)** | `heat_cool` + setbacks |
+| **Comfort** | Prefer heat index; target feels-like ~68–72°F |
+
+### Upstairs
+
+| Topic | Rule |
+|-------|------|
+| **Occupied mode** | Heat or cool only |
+| **Summer** | Outdoor > 65°F → cool |
+| **Winter** | Outdoor < 50°F → heat |
+| **Forecast** | High > 65°F → cool; high < 50°F → heat; prefer cool when uncertain |
+| **Night (10pm+)** | Setpoint **never above 71°F** |
+| **Daytime unoccupied** | Generally 72–74°F; weekend/zone sensors can imply occupancy |
+| **Away (ECO)** | `heat_cool` + setbacks |
+| **Comfort** | Heat index; daytime feels ~68–74°F; night ~65–70°F |
+
+---
+
+## How it works
+
+Every hour (when mode is not OFF):
+
+```mermaid
+flowchart TD
+  A[Gather context] --> B[Compute policy L1]
+  B --> C{Comfortable and idle?}
+  C -->|Yes| D[Skip AI - log and stop]
+  C -->|No| E[Call Gemini / conversation agent]
+  E --> F[Parse response]
+  F --> G[Clamp to policy L3 - safe temp/mode]
+  G --> H{Automation mode}
+  H -->|AUTOMATIC| I[Execute climate.set_*]
+  H -->|MONITORED| J[Notify Approve / Reject / Override]
+  H -->|maintain| K[No action]
 ```
-AI: "Turn off HVAC - doors are open"  
-You: [Approve] [Reject] [Override]
-     ↓ (tap Override)
-Text Input: "No, set it to 78° instead"
-     ↓
-System: ✅ Set to 78°F
-        🧠 Learned your preference
-```
 
-**The AI learns from your overrides** and will incorporate these preferences into future suggestions!
+| Layer | What it does |
+|-------|----------------|
+| **L1 – Policy templates** | Required mode, ECO, night min/max, skip-if-comfortable |
+| **L2 – AI prompt** | Judgment inside L1 bounds (shoulder season, nuance) |
+| **L3 – Safe clamp** | Enforces bounds on AI output before any thermostat command |
 
 ---
 
-## 📦 What's Included
+## Automation modes
 
-### **1. Updated Blueprint** (`ai_hvac_blueprint_unified.yaml`)
-- Adds "Override" button with text input to notifications
-- Only available in MONITORED mode
-- Works with existing automation configurations
+| Mode | Behavior |
+|------|----------|
+| **OFF** | No runs |
+| **AUTOMATIC** | AI suggestion is clamped by policy, then executed; passive notification |
+| **MONITORED** | Notification with Approve / Reject / Override; requires extra setup (see below) |
 
-### **2. Universal Override Handler** (`ai_hvac_override_handler.yaml`)
-- Single automation that handles ALL zones
-- Uses Gemini AI to parse natural language commands
-- Executes commands on thermostats
-- Stores learning data
-- Sends confirmation notifications
-
-### **3. This README**
-- Complete setup instructions
-- Helper creation guide
-- Command examples
-- Troubleshooting
+Default blueprint mode: **AUTOMATIC**.
 
 ---
 
-## 🚀 Installation (30 minutes)
+## Safety limits (blueprint inputs)
 
-### **Step 1: Update Existing Blueprint** (5 minutes)
-
-1. **Delete old blueprint:**
-   - Settings → Automations & Scenes → Blueprints
-   - Find "AI HVAC Advisor"
-   - Click ⋮ → Delete Blueprint
-
-2. **Import updated blueprint:**
-   - Click "Import Blueprint"
-   - Paste URL: `https://raw.githubusercontent.com/blord1976/ai-hvac-blueprint/main/ai_hvac_blueprint_unified.yaml`
-   - (Or manually upload the file)
-
-3. **Verify automations still work:**
-   - Settings → Automations & Scenes
-   - Check both AI HVAC automations are still enabled
-   - They should continue working normally
+- **Min / max temperature** — Absolute bounds (defaults 60–85°F)
+- **Max temperature change** — Per-run delta from current target (default 4°F)
+- **Zone policy** — Applies night rules on top (LR floor 74°F, Upstairs cap 71°F)
+- **Doors open** — AI instructed to recommend `turn_off` (wire a door sensor if used)
 
 ---
 
-### **Step 2: Create Learning Storage Helpers** (10 minutes)
+## ECO mode
 
-You need to create input_text helpers to store override learning data **for each zone**.
+When **home occupancy** is off/unoccupied (`input_boolean.anyone_home` off, or your configured entity):
 
-**For Living Room:**
+- ECO is active if enabled in blueprint
+- Cooling target can rise by **ECO cooling offset**; heating target can drop by **heating offset**
+- HVAC mode may switch to **`heat_cool`** for away protection
 
-1. **Settings → Devices & Services → Helpers**
-2. Click **"+ Create Helper"**
-3. Choose **"Text"**
-4. Configure:
-   - **Name:** `AI HVAC LR Learning Log`
-   - **Entity ID:** `input_text.ai_hvac_lr_learning_log`
-   - **Maximum length:** 5000
-   - **Icon:** `mdi:school`
-5. Click **"Create"**
-
-6. Create another helper:
-   - **Name:** `AI HVAC LR Pending Thermostat`
-   - **Entity ID:** `input_text.ai_hvac_lr_pending_thermostat`
-   - **Maximum length:** 100
-   - Click **"Create"**
-
-**For Upstairs (repeat above):**
-- `AI HVAC Upstairs Learning Log` → `input_text.ai_hvac_upstairs_learning_log` (max 5000)
-- `AI HVAC Upstairs Pending Thermostat` → `input_text.ai_hvac_upstairs_pending_thermostat` (max 100)
-
-**For future zones:** Follow same pattern replacing zone name.
+When anyone is home, ECO is inactive and comfort rules apply.
 
 ---
 
-### **Step 3: Install Override Handler Automation** (5 minutes)
+## Monitoring
 
-**Option A: Via UI (Recommended)**
+**Logs:** Settings → System → Logs → search `AI HVAC`
 
-1. **Settings → Automations & Scenes**
-2. Click **"+ Create Automation"**
-3. Click **"⋮" menu** (top right) → **"Edit in YAML"**
-4. **Delete everything** in the editor
-5. **Copy the entire contents** of `ai_hvac_override_handler.yaml`
-6. **Paste** into the editor
-7. Click **"Save"**
-8. Name it: `AI HVAC - Universal Override Handler`
+**Logbook:** Filter by zone name or `AI HVAC`
 
-**Option B: Via automations.yaml**
+**Skip runs:** Log message `Skip AI — feels-like … in band` means L1 decided no AI call was needed.
 
-1. Open your `/config/automations.yaml` file
-2. Copy the contents of `ai_hvac_override_handler.yaml`
-3. Paste at the bottom
-4. Reload automations:
-   - Developer Tools → YAML → Reload Automations
+**Clamped runs:** Log may include `| clamped` when L3 adjusted AI output.
 
 ---
 
-### **Step 4: Update Blueprint to Store Thermostat** (10 minutes)
+## Optional: MONITORED mode + overrides
 
-The override handler needs to know which thermostat to control. Update each AI HVAC automation:
+Use this if you want **approval** or **natural-language overrides** from phone notifications instead of fully automatic execution.
 
-**For Living Room automation:**
+### Requirements
 
-1. Open the automation in edit mode
-2. Click **"⋮" menu** → **"Edit in YAML"**
-3. Find the section that starts with `# Store pending action data`
-4. Add this action **before** the event action:
+1. Set blueprint **Automation mode** to **MONITORED**
+2. Install [`ai_hvac_override_handler.yaml`](ai_hvac_override_handler.yaml) as a separate automation (once per HA instance)
+3. Create per-zone helpers (example Living Room):
+
+| Helper | Entity ID | Max length |
+|--------|-----------|------------|
+| Learning log | `input_text.ai_hvac_lr_learning_log` | 5000 |
+| Pending thermostat | `input_text.ai_hvac_lr_pending_thermostat` | 100 |
+
+Repeat for each zone prefix (`upstairs`, etc.).
+
+4. **Approve / Reject handlers** — The blueprint fires `ai_hvac_suggestion_pending` events and shows Approve/Reject buttons, but **you still need automations** that listen for `APPROVE_*_HVAC` / `REJECT_*_HVAC` notification actions and apply the change. Override-only setup is documented in the handler file.
+
+5. Customize hardcoded services in the override handler if needed (`agent_id`, `notify.mobile_app_*`).
+
+### Override command examples
+
+- `set to 72` / `78 degrees`
+- `switch to heat mode` (use `heat_cool` for Ezlo “auto”)
+- `turn off the HVAC`
+
+**Note:** Learning log append is Phase 1 storage; the main blueprint does not yet inject learning history into the hourly AI prompt.
+
+---
+
+## Troubleshooting
+
+### No suggestions / no changes
+
+- Automation enabled and mode not OFF
+- Test conversation agent under **Settings → Voice assistants**
+- Sensors not `unknown` / `unavailable`
+- Check logs for `Skip AI` (comfort band — expected)
+
+### AI suggestion ignored or wrong temp
+
+- Check log for `clamped` — L3 may have limited the setpoint
+- Verify **zone policy profile** matches the zone (Living Room vs Upstairs)
+- Confirm **feels-like** and **outdoor** entities are wired
+
+### ECO not activating
+
+- `input_boolean.anyone_home` (or your occupancy entity) must go **off** when away
+- ECO enabled in blueprint
+- Look for ECO in logbook / notifications
+
+### MONITORED: buttons do nothing
+
+- Approve/Reject need separate notification-action automations (not included in minimal repo)
+- Override requires helpers + override handler + thermostat stored in pending helper
+
+### After updating the blueprint
+
+1. Re-import blueprint URL or file
+2. Open each AI HVAC automation → **Update from blueprint**
+3. Re-select new inputs (zone policy, feels-like, dew point, occupancy)
+4. Save and test with manual run
+
+---
+
+## Planned enhancements
+
+Documented in [ZONE-RULES-IMPLEMENTATION.md](ZONE-RULES-IMPLEMENTATION.md):
+
+- `input_datetime` helpers for **once-per-day mode switching**
+- **8am** forecast mode selection
+- **Arrive / leave home** triggers on `anyone_home`
+- Stronger upstairs **weekday vs weekend** daytime logic
+
+---
+
+## Sample dashboard card
 
 ```yaml
-          # Store thermostat entity for override handler
-          - service: input_text.set_value
-            target:
-              entity_id: input_text.ai_hvac_lr_pending_thermostat
-            data:
-              value: "{{ thermostat }}"
-```
-
-5. Click **"Save"**
-
-**Repeat for Upstairs automation** (change `lr` to `upstairs` in entity ID).
-
----
-
-## ✅ Testing
-
-### **Test 1: Verify Override Button Appears**
-
-1. Wait for next hourly AI HVAC check (or manually run automation)
-2. Check notification - should have **3 buttons** now:
-   - ✅ Approve
-   - ❌ Reject
-   - 🔧 Override
-
-### **Test 2: Send an Override Command**
-
-1. Tap **"Override"** button
-2. Type: `set to 72`
-3. Tap **"Send"**
-4. Check:
-   - Thermostat should change to 72°F
-   - You get confirmation notification
-   - Logbook shows the override
-   - Learning log helper contains the event
-
-### **Test 3: Check Learning Data**
-
-1. **Developer Tools → States**
-2. Search: `input_text.ai_hvac_lr_learning_log`
-3. Should see: `2026-04-02T20:30:00|set to 72|adjust_temp|72|null;`
-
----
-
-## 💬 Command Examples
-
-### **Temperature Commands:**
-- `set to 78`
-- `78 degrees`
-- `make it 72°F`
-- `change to 70`
-- `set temp to 75`
-
-### **Mode Commands:**
-- `switch to heat mode`
-- `use auto mode`
-- `change to cooling`
-- `heat mode please`
-- `put it in auto`
-
-### **Combined Commands:**
-- `set to 72 in auto mode`
-- `78 degrees cool mode`
-- `heat at 68`
-- `make it 70 and use auto`
-
-### **Turn Off:**
-- `turn it off`
-- `turn off the HVAC`
-- `shut it down`
-- `off`
-
-### **Complex Examples:**
-- `No, don't turn it off, set to 78 instead`
-- `ignore that, just make it 72`
-- `actually keep it on at 75`
-
----
-
-## 🧠 How Learning Works
-
-### **Phase 1 (Current): Basic Learning**
-
-**What gets stored:**
-- Timestamp (for time-of-day patterns)
-- Your command text
-- Parsed action (adjust_temp, change_mode, turn_off)
-- Temperature value (if specified)
-- Mode value (if specified)
-
-**Example log entry:**
-```
-2026-04-02T19:30:00|set to 78 instead|adjust_temp|78|cool;
-2026-04-02T20:15:00|switch to auto mode|change_mode|null|heat_cool;
-```
-
-### **Phase 2 (Future): Advanced Learning**
-
-**Pattern recognition:**
-- Evening overrides → Learn evening preferences
-- When doors open → Learn your response
-- High outdoor temp → Learn preferred settings
-
-**Auto-incorporation into AI prompts:**
-```
-Based on past overrides:
-- Evenings: User prefers 78°F not off when doors open
-- Hot days (>85°F): User prefers 76°F not 72°F
-```
-
-**Confidence-based suggestions:**
-```
-AI: "Based on 3 similar situations, suggest 78°F (confidence: 90%)"
+type: entities
+title: AI HVAC - Living Room
+entities:
+  - climate.lr_stat
+  - sensor.lr_thermal_comfort_heat_index
+  - input_boolean.anyone_home
+  - automation.ai_hvac_advisor_living_room
 ```
 
 ---
 
-## 🐛 Troubleshooting
+## Contributing
 
-### **Override button doesn't appear**
-
-**Check:**
-1. Blueprint was updated (delete old, import new)
-2. Automation mode is **MONITORED** (not AUTOMATIC)
-3. Automation has run at least once since update
-
-### **"No thermostat found" error**
-
-**Fix:**
-1. Make sure you added the `input_text.set_value` action to store thermostat
-2. Check helper exists: `input_text.ai_hvac_[zone]_pending_thermostat`
-3. Manually trigger automation to populate helper
-
-### **"Command unclear" - Low confidence**
-
-**Try:**
-- More specific commands: "set to 72" instead of "make it cooler"
-- Include units: "78°F" or "78 degrees"
-- Use standard mode names: "heat", "cool", "auto"
-
-### **Command executes wrong action**
-
-**Examples of AI parsing:**
-- "warmer" → May not parse (be specific: "75°F")
-- "auto" → Changes mode to auto
-- "off" → Turns off HVAC
-
-**Solution:** Check logbook to see what was parsed, then use clearer commands.
-
-### **Learning data not saving**
-
-**Check:**
-1. Helper exists with correct entity ID
-2. Helper max length is 5000
-3. Check Developer Tools → States to see current value
-4. If full (5000 chars), clear it or increase max length
+Issues and PRs welcome: [AI-HVAC-Controller Issues](https://github.com/blord1976/AI-HVAC-Controller/issues)
 
 ---
 
-## 📊 Viewing Learning Data
+## License
 
-### **Via Developer Tools:**
-
-1. **Developer Tools → States**
-2. Search: `input_text.ai_hvac_lr_learning_log`
-3. See all overrides as semicolon-separated entries
-
-### **Via Logbook:**
-
-1. **Settings → System → Logbook**
-2. Filter: `AI HVAC Override`
-3. See all parsed commands with timestamps
-
-### **Decode Log Format:**
-
-```
-timestamp|user_command|action|temperature|mode;
-```
-
-Example:
-```
-2026-04-02T19:30:00|set to 78|adjust_temp|78|cool;
-```
-= On April 2 at 7:30 PM, user overrode with "set to 78", system parsed as adjust_temp to 78°F in cool mode
+MIT License
 
 ---
 
-## 🔮 Future Enhancements (Phase 2)
+## Author
 
-**Planned features:**
-- ✅ Pattern recognition engine
-- ✅ Automatic preference profiles
-- ✅ Multi-condition learning (time + weather + occupancy)
-- ✅ "Stop suggesting this" learning
-- ✅ Cross-zone preference correlation
-- ✅ ML-based prediction refinement
-- ✅ Dashboard showing learned preferences
-- ✅ Export/import preference profiles
-
-**Timeline:** Phase 2 development after Phase 1 validation (few weeks of real-world usage)
-
----
-
-## 📁 File Locations
-
-**Blueprint:** `/config/blueprints/automation/blord1976/ai_hvac_blueprint_unified.yaml`  
-**Override Handler:** `/config/automations.yaml` (or separate file)  
-**Learning Logs:** Stored in input_text helpers (accessible via Developer Tools)
-
----
-
-## 🤝 Support
-
-**Issues:** https://github.com/blord1976/ai-hvac-blueprint/issues  
-**Discussions:** https://github.com/blord1976/ai-hvac-blueprint/discussions  
-**Documentation:** https://github.com/blord1976/ai-hvac-blueprint
-
----
-
-## ⚖️ License
-
-MIT License - Free to use, modify, and distribute
-
----
-
-## 👨‍💻 Author
-
-Brandon Lord
-
-Built for Home Assistant enthusiasts who want smarter, adaptive HVAC control with AI learning.
-
----
-
-**Enjoy your AI-powered, learning HVAC system!** 🎉🌡️🧠
+Brandon Lord — Home Assistant climate automation with AI and enforceable zone policies.

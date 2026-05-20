@@ -179,16 +179,15 @@ These can be separate small automations or blueprint `trigger` list additions.
 
 ---
 
-## Next step in repo
+## Blueprint status
 
-Blueprint update plan (`ai_hvac_blueprint_unified.yaml`):
+Implemented in `ai_hvac_blueprint_unified.yaml` (see [README.md](README.md)):
 
-1. `zone_policy` input: `living_room` | `upstairs`
-2. Optional: feels-like, dew-point, zone-occupancy sensors
-3. Allow `input_boolean` on occupancy input
-4. L1 `policy` variables + skip-before-AI
-5. Inject zone RULES text into prompt (your blocks, maintained in repo)
-6. L3 clamp temp/mode before automatic execution
-7. Default mode: `automatic`
+- `zone_policy`, feels-like / dew-point / zone-occupancy inputs
+- `input_boolean` + `binary_sensor` for home occupancy
+- L1 policy, skip-before-AI, L3 safe clamp, zone rules in prompt
+- Default automation mode: `automatic`
 
-Re-import blueprint in HA only when ready — existing automations keep old config until you update from blueprint.
+**Still manual / future:** once-per-day mode helpers, 8am forecast trigger, arrive/leave automations, full upstairs weekday logic in templates.
+
+Re-import blueprint in HA and **Update from blueprint** on each zone automation when you pull repo changes.
