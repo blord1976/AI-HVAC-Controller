@@ -41,11 +41,15 @@ blueprint:
         text:
     
     occupancy_sensor:
-      name: Occupancy Sensor
-      description: Binary sensor for home/away status (required for ECO mode)
+      name: Home Occupancy
+      description: >
+        Home occupied/away signal (e.g. input_boolean.anyone_home or binary_sensor.anyone_home_occupancy).
+        Occupied = "on". Used for ECO when off/unoccupied.
       selector:
         entity:
-          domain: binary_sensor
+          domain:
+            - binary_sensor
+            - input_boolean
     
     # =============================================================================
     # OPTIONAL SENSORS - Improve AI accuracy
@@ -92,6 +96,45 @@ blueprint:
       default: ""
       selector:
         entity:
+
+    feels_like_sensor:
+      name: Feels-Like / Heat Index Sensor (Optional)
+      description: e.g. sensor.lr_thermal_comfort_heat_index — used instead of dry-bulb temp for comfort rules
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    dew_point_sensor:
+      name: Dew Point Sensor (Optional)
+      description: e.g. sensor.lr_thermal_comfort_dew_point — high humidity prioritization
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+    zone_occupancy_sensor:
+      name: Zone Occupancy Sensor (Optional)
+      description: >
+        Per-zone occupied (e.g. binary_sensor.upstairs_occupancy_status). If empty, home occupancy is used.
+      default: ""
+      selector:
+        entity:
+          domain:
+            - binary_sensor
+            - input_boolean
+
+    zone_policy:
+      name: Zone Policy Profile
+      description: Pre-defined rule set for Living Room vs Upstairs (enforced in templates + prompt)
+      default: living_room
+      selector:
+        select:
+          options:
+            - label: "Living Room"
+              value: "living_room"
+            - label: "Upstairs"
+              value: "upstairs"
     
     # =============================================================================
     # AUTOMATION MODE - Control behavior
@@ -103,7 +146,7 @@ blueprint:
         OFF: Disabled (no analysis or actions).
         MONITORED: AI suggests changes, you approve via notification buttons (safest).
         AUTOMATIC: AI executes changes automatically with notification (advanced users only).
-      default: monitored
+      default: automatic
       selector:
         select:
           options:
@@ -220,6 +263,10 @@ variables:
   weather: !input weather_entity
   occupancy: !input occupancy_sensor
   doors: !input door_sensor
+  feels_like: !input feels_like_sensor
+  dew_point: !input dew_point_sensor
+  zone_occupancy: !input zone_occupancy_sensor
+  zone_policy: !input zone_policy
   eco_enabled: !input eco_mode_enabled
   eco_cooling: !input eco_cooling_offset
   eco_heating: !input eco_heating_offset
@@ -281,7 +328,76 @@ action:
         min_allowed: "{{ min_temp }}"
         max_allowed: "{{ max_temp }}"
         max_change_allowed: "{{ max_change }}"
-  
+
+        feels_like_temp: >
+          {% if feels_like != "" %}{{ states(feels_like) | float(states(indoor_temp) | float(70)) }}{% else %}{{ states(indoor_temp) | float(70) }}{% endif %}
+        dew_point_f: >
+          {% if dew_point != "" %}{{ states(dew_point) | float(50) }}{% else %}N/A{% endif %}
+        zone_occupied: >
+          {% if zone_occupancy != "" %}{{ is_state(zone_occupancy, 'on') }}{% else %}{{ is_state(occupancy, 'on') }}{% endif %}
+        supported_hvac_modes: "{{ state_attr(thermostat, 'hvac_modes') | join(', ') }}"
+
+  # Step 1b: Compute enforced policy (templates — not prompt-only)
+  - variables:
+      policy:
+        home_occupied: "{{ is_state(occupancy, 'on') }}"
+        eco_active: "{{ eco_enabled and not is_state(occupancy, 'on') }}"
+        hour: "{{ now().hour }}"
+        outdoor_f: >
+          {% if outdoor_temp != "" %}{{ states(outdoor_temp) | float(70) }}{% else %}70{% endif %}
+        forecast_high_f: >
+          {% if weather != "" and state_attr(weather, 'forecast') %}{{ state_attr(weather, 'forecast')[0].temperature | float(70) }}{% else %}70{% endif %}
+        feels_f: "{{ context.feels_like_temp | float(70) }}"
+        is_night: >
+          {{ (zone_policy == 'living_room' and now().hour >= 23) or (zone_policy == 'upstairs' and now().hour >= 22) }}
+        is_weekend: "{{ now().weekday() in [5, 6] }}"
+        required_mode: >
+          {% if eco_enabled and not is_state(occupancy, 'on') -%}
+          heat_cool
+          {%- elif zone_policy == 'living_room' -%}
+          {%- if outdoor_temp != "" and states(outdoor_temp) | float(70) > 75 -%}cool
+          {%- elif outdoor_temp != "" and states(outdoor_temp) | float(70) < 55 -%}heat
+          {%- elif weather != "" and state_attr(weather, 'forecast') and state_attr(weather, 'forecast')[0].temperature | float(70) > 70 -%}cool
+          {%- elif weather != "" and state_attr(weather, 'forecast') and state_attr(weather, 'forecast')[0].temperature | float(70) < 60 -%}heat
+          {%- else -%}{{ states(thermostat) }}{%- endif -%}
+          {%- elif zone_policy == 'upstairs' -%}
+          {%- if outdoor_temp != "" and states(outdoor_temp) | float(70) > 65 -%}cool
+          {%- elif outdoor_temp != "" and states(outdoor_temp) | float(70) < 50 -%}heat
+          {%- elif weather != "" and state_attr(weather, 'forecast') and state_attr(weather, 'forecast')[0].temperature | float(70) > 65 -%}cool
+          {%- elif weather != "" and state_attr(weather, 'forecast') and state_attr(weather, 'forecast')[0].temperature | float(70) < 50 -%}heat
+          {%- else -%}cool{%- endif -%}
+          {%- else -%}{{ states(thermostat) }}{%- endif -%}
+        eff_min_temp: >
+          {% set base = min_temp | float %}
+          {% if zone_policy == 'living_room' and now().hour >= 23 %}{{ [base, 74] | max }}{% else %}{{ base }}{% endif %}
+        eff_max_temp: >
+          {% set base = max_temp | float %}
+          {% if zone_policy == 'upstairs' and now().hour >= 22 %}{{ [base, 71] | min }}{% else %}{{ base }}{% endif %}
+        skip_ai: >
+          {% set eco_on = eco_enabled and not is_state(occupancy, 'on') %}
+          {% set feels = context.feels_like_temp | float(70) %}
+          {% set feels_max = 74 if zone_policy == 'upstairs' else 72 %}
+          {{ not eco_on
+             and state_attr(thermostat, 'hvac_action') == 'idle'
+             and feels >= 68
+             and feels <= feels_max }}
+        high_humidity: >
+          {{ context.dew_point_f != 'N/A' and (context.dew_point_f | float(0)) > 65 }}
+
+  # Step 1c: Skip AI when comfortable and idle (saves drift + API calls)
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ policy.skip_ai }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "AI HVAC ({{ zone_name }})"
+              message: >
+                ✓ Skip AI — feels-like {{ context.feels_like_temp }}°F in band, HVAC idle,
+                mode {{ states(thermostat) }} matches policy ({{ policy.required_mode }})
+          - stop: "Comfort band — policy skip"
+
   # Step 2: Call Gemini AI
   - service: conversation.process
     data:
@@ -292,10 +408,13 @@ action:
         MODE: {{ context.mode | upper }}
         
         INDOOR:
-        - Temperature: {{ context.indoor_temp }}°F (target: {{ context.thermostat_target }}°F)
+        - Dry-bulb: {{ context.indoor_temp }}°F (target: {{ context.thermostat_target }}°F)
+        - Feels-like (heat index): {{ context.feels_like_temp }}°F
+        {% if context.dew_point_f != "N/A" -%}- Dew point: {{ context.dew_point_f }}°F{% if policy.high_humidity %} (HIGH — prioritize dehumidification/cooling){% endif %}{% endif %}
         {% if context.indoor_humidity != "N/A" -%}- Humidity: {{ context.indoor_humidity }}%{% endif %}
-        - Thermostat: {{ context.thermostat_mode }}
-        - HVAC: {{ context.hvac_action }}
+        - Thermostat mode: {{ context.thermostat_mode }} | Allowed: {{ context.supported_hvac_modes }}
+        - HVAC action: {{ context.hvac_action }}
+        - Zone occupied: {% if context.zone_occupied %}YES{% else %}NO{% endif %}
         
         OUTDOOR:
         {% if context.outdoor_temp != "N/A" -%}- Temperature: {{ context.outdoor_temp }}°F{% endif %}
@@ -326,12 +445,23 @@ action:
         HOW: [One sentence explaining the benefit]
         CONFIDENCE: [0-100]
         
-        RULES:
-        - Optimal conditions → ACTION: maintain
-        - Temperature range: {{ context.min_allowed }}-{{ context.max_allowed }}°F
-        - Max change: ±{{ context.max_change_allowed }}°F
-        - Doors open → ACTION: turn_off
-        - Brief explanations only
+        HARD POLICY (templates already computed — do not violate):
+        - Profile: {{ zone_policy | upper }}
+        - Home occupied (Anyone Home): {% if policy.home_occupied %}YES{% else %}NO{% endif %}
+        - Required HVAC mode now: {{ policy.required_mode }} (Ezlo "Auto" = heat_cool)
+        - Enforced setpoint range this run: {{ policy.eff_min_temp }}–{{ policy.eff_max_temp }}°F
+        - Max change: ±{{ context.max_change_allowed }}°F from current target
+        - Occupied: use heat OR cool ONLY (never heat_cool/auto)
+        - Unoccupied ECO: heat_cool OK; apply ECO setbacks
+        {% if zone_policy == 'living_room' -%}
+        LIVING ROOM: Summer outdoor >75°F → cool. Winter <55°F → heat. Forecast high >70°F → cool, <60°F → heat.
+        After 11pm: setpoint never below 74°F. Prefer maintain at night unless extreme.
+        {% else -%}
+        UPSTAIRS: Summer outdoor >65°F → cool. Winter <50°F → heat. Forecast high >65°F → cool, <50°F → heat.
+        After 10pm: setpoint never above 71°F. Prefer stable cool for sleep. Daytime unoccupied: 72–74°F.
+        Weekend/daytime: if zone occupied in spring/summer/fall, prefer 72°F cooling.
+        {% endif -%}
+        - Optimal → ACTION: maintain | Doors open → turn_off | Brief answers only
       agent_id: !input ai_agent
     response_variable: ai_response
   
@@ -357,16 +487,39 @@ action:
         confidence: >
           {% set lines = ai_text.split('\n') %}
           {% for line in lines %}{% if 'CONFIDENCE:' in line %}{{ line.split('CONFIDENCE:')[1].strip() }}{% endif %}{% endfor %}
+
+  # Step 3b: Enforce policy on parsed AI output (before any execution)
+  - variables:
+      safe:
+        action: >
+          {% if parsed.action not in ['maintain', 'adjust_temp', 'change_mode', 'turn_off'] %}maintain{% else %}{{ parsed.action }}{% endif %}
+        mode: >
+          {% if policy.eco_active %}heat_cool
+          {% elif parsed.action == 'change_mode' and parsed.mode in ['heat', 'cool', 'heat_cool', 'off'] %}{{ parsed.mode if parsed.mode in ['heat', 'cool'] else policy.required_mode }}
+          {% elif parsed.action in ['adjust_temp', 'change_mode'] %}{{ policy.required_mode }}
+          {% else %}{{ parsed.mode }}{% endif %}
+        temp: >
+          {% set t = parsed.temp | float(context.thermostat_target) %}
+          {% set lo = policy.eff_min_temp | float %}
+          {% set hi = policy.eff_max_temp | float %}
+          {% set cur = context.thermostat_target | float %}
+          {% set max_delta = context.max_change_allowed | float %}
+          {% set t = [[t, hi] | min, lo] | max %}
+          {% set t = [[t, cur + max_delta] | min, cur - max_delta] | max %}
+          {{ t }}
+        confidence: "{{ parsed.confidence }}"
+        why: "{{ parsed.why }}"
+        how: "{{ parsed.how }}"
   
   # Step 4: Log suggestion
   - service: logbook.log
     data:
       name: "AI HVAC ({{ zone_name }})"
       message: >
-        {% if parsed.action == 'maintain' -%}
+        {% if safe.action == 'maintain' -%}
         ✓ No changes - conditions optimal
         {% else -%}
-        💡 {{ parsed.action | upper }}: {{ parsed.temp }}°F {{ parsed.mode }} | {{ parsed.why }} | {{ parsed.how }} | Confidence: {{ parsed.confidence }}%{% if context.eco_mode_active %} | 🌿 ECO{% endif %}
+        💡 {{ safe.action | upper }}: {{ safe.temp }}°F {{ safe.mode }} | {{ safe.why }} | {{ safe.how }} | Confidence: {{ safe.confidence }}%{% if context.eco_mode_active %} | 🌿 ECO{% endif %}{% if safe.temp != parsed.temp or safe.mode != parsed.mode %} | clamped{% endif %}
         {% endif %}
   
   # Step 5: Handle action based on mode
@@ -376,7 +529,7 @@ action:
       # =================================================================
       - conditions:
           - condition: template
-            value_template: "{{ parsed.action == 'maintain' }}"
+            value_template: "{{ safe.action == 'maintain' }}"
         sequence: []
       
       # =================================================================
@@ -384,19 +537,19 @@ action:
       # =================================================================
       - conditions:
           - condition: template
-            value_template: "{{ automation_mode == 'monitored' and parsed.action != 'maintain' }}"
+            value_template: "{{ automation_mode == 'monitored' and safe.action != 'maintain' }}"
         sequence:
           - service: "{{ notification_service }}"
             data:
               title: "🌡️ AI HVAC ({{ zone_name }})"
               message: >
-                {% if parsed.action == 'adjust_temp' %}Set to {{ parsed.temp }}°F
-                {% elif parsed.action == 'change_mode' %}Switch to {{ parsed.mode }} mode
-                {% elif parsed.action == 'turn_off' %}Turn off HVAC
-                {% else %}{{ parsed.action | title }}{% endif %}
+                {% if safe.action == 'adjust_temp' %}Set to {{ safe.temp }}°F
+                {% elif safe.action == 'change_mode' %}Switch to {{ safe.mode }} mode
+                {% elif safe.action == 'turn_off' %}Turn off HVAC
+                {% else %}{{ safe.action | title }}{% endif %}
                 
-                Why: {{ parsed.why }}
-                How: {{ parsed.how }}
+                Why: {{ safe.why }}
+                How: {{ safe.how }}
                 {% if context.eco_mode_active %}
                 
                 🌿 ECO Mode Active{% endif %}
@@ -422,10 +575,10 @@ action:
             event_data:
               zone: "{{ zone_name }}"
               action_id: "{{ action_id_prefix }}"
-              action_type: "{{ parsed.action }}"
-              target_temp: "{{ parsed.temp }}"
-              target_mode: "{{ parsed.mode }}"
-              reason: "{{ parsed.why }} | {{ parsed.how }}"
+              action_type: "{{ safe.action }}"
+              target_temp: "{{ safe.temp }}"
+              target_mode: "{{ safe.mode }}"
+              reason: "{{ safe.why }} | {{ safe.how }}"
               thermostat: "{{ thermostat }}"
               notification_service: "{{ notification_service }}"
       
@@ -434,33 +587,33 @@ action:
       # =================================================================
       - conditions:
           - condition: template
-            value_template: "{{ automation_mode == 'automatic' and parsed.action != 'maintain' }}"
+            value_template: "{{ automation_mode == 'automatic' and safe.action != 'maintain' }}"
         sequence:
           # Execute the change
           - choose:
               - conditions:
                   - condition: template
-                    value_template: "{{ parsed.action == 'adjust_temp' }}"
+                    value_template: "{{ safe.action == 'adjust_temp' }}"
                 sequence:
                   - service: climate.set_temperature
                     target:
                       entity_id: "{{ thermostat }}"
                     data:
-                      temperature: "{{ parsed.temp | float }}"
+                      temperature: "{{ safe.temp | float }}"
               
               - conditions:
                   - condition: template
-                    value_template: "{{ parsed.action == 'change_mode' }}"
+                    value_template: "{{ safe.action == 'change_mode' }}"
                 sequence:
                   - service: climate.set_hvac_mode
                     target:
                       entity_id: "{{ thermostat }}"
                     data:
-                      hvac_mode: "{{ parsed.mode }}"
+                      hvac_mode: "{{ safe.mode }}"
               
               - conditions:
                   - condition: template
-                    value_template: "{{ parsed.action == 'turn_off' }}"
+                    value_template: "{{ safe.action == 'turn_off' }}"
                 sequence:
                   - service: climate.turn_off
                     target:
@@ -471,12 +624,12 @@ action:
             data:
               title: "✅ AI HVAC Auto-Executed ({{ zone_name }})"
               message: >
-                {% if parsed.action == 'adjust_temp' %}Set to {{ parsed.temp }}°F
-                {% elif parsed.action == 'change_mode' %}Switched to {{ parsed.mode }}
-                {% elif parsed.action == 'turn_off' %}Turned off HVAC
+                {% if safe.action == 'adjust_temp' %}Set to {{ safe.temp }}°F
+                {% elif safe.action == 'change_mode' %}Switched to {{ safe.mode }}
+                {% elif safe.action == 'turn_off' %}Turned off HVAC
                 {% endif %}
                 
-                {{ parsed.why }}{% if context.eco_mode_active %} | 🌿 ECO{% endif %}
+                {{ safe.why }}{% if context.eco_mode_active %} | 🌿 ECO{% endif %}
               data:
                 tag: "ai_hvac_{{ action_id_prefix | lower }}"
                 push:
@@ -486,4 +639,4 @@ action:
           - service: logbook.log
             data:
               name: "AI HVAC ({{ zone_name }})"
-              message: "✅ AUTO-EXECUTED: {{ parsed.action }} - {{ parsed.why }}"
+              message: "✅ AUTO-EXECUTED: {{ safe.action }} → {{ safe.temp }}°F {{ safe.mode }} — {{ safe.why }}"
