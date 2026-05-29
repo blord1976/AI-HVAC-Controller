@@ -1,0 +1,11 @@
+{
+  "domain": "ai_hvac",
+  "name": "AI HVAC Advisor",
+  "codeowners": ["@blord1976"],
+  "config_flow": false,
+  "dependencies": ["conversation"],
+  "documentation": "https://github.com/blord1976/AI-HVAC-Controller",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/blord1976/AI-HVAC-Controller/issues",
+  "version": "2.0.0"
+}

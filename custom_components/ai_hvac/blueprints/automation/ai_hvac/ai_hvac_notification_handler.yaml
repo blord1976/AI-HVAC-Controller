@@ -1,0 +1,219 @@
+blueprint:
+  name: AI HVAC Notification Handler
+  description: >
+    Handles Approve, Reject, and Override notification actions from AI HVAC Advisor (MONITORED mode).
+    Install once per Home Assistant instance. No helpers required — uses data embedded in notifications.
+    Requires the Home Assistant Companion app for mobile notification actions.
+  domain: automation
+  author: Brandon Lord
+  source_url: https://github.com/blord1976/AI-HVAC-Controller
+
+  input:
+    ai_agent:
+      name: AI Conversation Agent
+      description: Same agent used by your AI HVAC zone automations (for Override text parsing)
+      selector:
+        conversation_agent:
+
+    notification_service:
+      name: Confirmation Notification Service
+      description: Where to send override/approve confirmations
+      selector:
+        text:
+
+    min_confidence:
+      name: Override Minimum Confidence
+      description: Reject parsed override commands below this confidence (0-100)
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 5
+
+mode: queued
+max: 10
+
+variables:
+  min_confidence: !input min_confidence
+  notification_service: !input notification_service
+
+trigger:
+  - platform: event
+    event_type: mobile_app_notification_action
+
+condition: []
+
+action:
+  - variables:
+      action_id: "{{ trigger.event.data.action | default('') }}"
+      is_hvac: >
+        {{ '_HVAC' in action_id and ('APPROVE_' in action_id or 'REJECT_' in action_id or 'OVERRIDE_' in action_id) }}
+      thermostat: >
+        {{ trigger.event.data.get('ai_hvac_thermostat', trigger.event.data.get('entity_id', '')) }}
+      pending_action: "{{ trigger.event.data.get('ai_hvac_action', 'maintain') }}"
+      pending_temp: "{{ trigger.event.data.get('ai_hvac_temp', '') }}"
+      pending_mode: "{{ trigger.event.data.get('ai_hvac_mode', '') }}"
+      zone_id: "{{ trigger.event.data.get('ai_hvac_zone', action_id.replace('APPROVE_', '').replace('REJECT_', '').replace('OVERRIDE_', '').replace('_HVAC', '')) }}"
+      user_command: "{{ trigger.event.data.get('action_data', {}).get('reply_text', '') | default('') }}"
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ not is_hvac }}"
+        sequence:
+          - stop: "Not an AI HVAC notification action"
+
+  - choose:
+      # --- REJECT ---
+      - conditions:
+          - condition: template
+            value_template: "{{ 'REJECT_' in action_id }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "AI HVAC ({{ zone_id }})"
+              message: "User rejected AI suggestion"
+          - stop: "Rejected"
+
+      # --- APPROVE ---
+      - conditions:
+          - condition: template
+            value_template: "{{ 'APPROVE_' in action_id }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ thermostat == '' }}"
+                sequence:
+                  - service: logbook.log
+                    data:
+                      name: "AI HVAC"
+                      message: "Approve failed — no thermostat in notification data. Re-create automation from latest blueprint."
+                  - stop: "Missing thermostat"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ pending_action == 'adjust_temp' }}"
+                sequence:
+                  - service: climate.set_temperature
+                    target:
+                      entity_id: "{{ thermostat }}"
+                    data:
+                      temperature: "{{ pending_temp | float }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ pending_action == 'change_mode' }}"
+                sequence:
+                  - service: climate.set_hvac_mode
+                    target:
+                      entity_id: "{{ thermostat }}"
+                    data:
+                      hvac_mode: "{{ pending_mode }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ pending_action == 'turn_off' }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ thermostat }}"
+          - service: logbook.log
+            data:
+              name: "AI HVAC ({{ zone_id }})"
+              message: "Approved and executed {{ pending_action }}"
+          - service: "{{ notification_service }}"
+            data:
+              title: "AI HVAC — {{ zone_id }}"
+              message: "Approved: {{ pending_action }} → {{ pending_temp }} {{ pending_mode }}"
+
+      # --- OVERRIDE ---
+      - conditions:
+          - condition: template
+            value_template: "{{ 'OVERRIDE_' in action_id }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ user_command == '' }}"
+                sequence:
+                  - service: logbook.log
+                    data:
+                      name: "AI HVAC ({{ zone_id }})"
+                      message: "Override failed — no text provided"
+                  - stop: "Empty override"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ thermostat == '' }}"
+                sequence:
+                  - service: logbook.log
+                    data:
+                      name: "AI HVAC"
+                      message: "Override failed — no thermostat in notification data"
+                  - stop: "Missing thermostat"
+          - service: conversation.process
+            data:
+              text: |
+                Parse this HVAC command. Return ONLY valid JSON, no markdown:
+                {"action":"adjust_temp|change_mode|turn_off|maintain","temperature":null,"mode":null,"confidence":0-100}
+                User: "{{ user_command }}"
+                Use heat_cool for thermostat auto mode.
+              agent_id: !input ai_agent
+            response_variable: ai_parse
+          - variables:
+              ai_text: "{{ ai_parse.response.speech.plain.speech | replace('```json', '') | replace('```', '') | trim }}"
+              cmd: "{{ ai_text | from_json }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ cmd.confidence | int(0) < min_confidence | int }}"
+                sequence:
+                  - service: logbook.log
+                    data:
+                      name: "AI HVAC ({{ zone_id }})"
+                      message: "Override unclear ({{ cmd.confidence }}%): {{ user_command }}"
+                  - stop: "Low confidence"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ cmd.action == 'adjust_temp' and cmd.temperature is not none }}"
+                sequence:
+                  - service: climate.set_temperature
+                    target:
+                      entity_id: "{{ thermostat }}"
+                    data:
+                      temperature: "{{ cmd.temperature | float }}"
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ cmd.mode is not none }}"
+                        sequence:
+                          - service: climate.set_hvac_mode
+                            target:
+                              entity_id: "{{ thermostat }}"
+                            data:
+                              hvac_mode: "{{ cmd.mode }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ cmd.action == 'change_mode' and cmd.mode is not none }}"
+                sequence:
+                  - service: climate.set_hvac_mode
+                    target:
+                      entity_id: "{{ thermostat }}"
+                    data:
+                      hvac_mode: "{{ cmd.mode }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ cmd.action == 'turn_off' }}"
+                sequence:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: "{{ thermostat }}"
+          - service: logbook.log
+            data:
+              name: "AI HVAC ({{ zone_id }})"
+              message: "Override executed from: {{ user_command }}"
+          - service: "{{ notification_service }}"
+            data:
+              title: "AI HVAC — {{ zone_id }}"
+              message: "Override: {{ user_command }}"

@@ -1,0 +1,7 @@
+{
+  "name": "AI HVAC Advisor",
+  "content_in_root": false,
+  "filename": "ai_hvac",
+  "homeassistant": "2024.6.0",
+  "render_readme": true
+}
