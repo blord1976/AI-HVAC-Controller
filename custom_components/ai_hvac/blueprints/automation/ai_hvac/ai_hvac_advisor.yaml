@@ -457,6 +457,13 @@ trigger:
   - platform: time_pattern
     hours: !input check_interval_hours
     id: scheduled_check
+  - platform: state
+    entity_id: !input occupancy_sensor
+    to:
+      - "on"
+      - "home"
+      - "occupied"
+    id: occupancy_check
 
 condition:
   - condition: template
