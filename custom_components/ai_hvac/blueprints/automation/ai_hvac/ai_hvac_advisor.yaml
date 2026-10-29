@@ -3,7 +3,9 @@ blueprint:
   description: >
     Universal AI-powered HVAC optimization for any Home Assistant setup.
     Configure your own comfort rules, seasonal mode logic, and safety limits per zone.
-    Uses a conversation agent (Gemini, OpenAI, etc.). No helpers or input entities required.
+    Uses a conversation agent (Gemini, OpenAI, etc.). Thermostat control needs no helpers.
+    Optional: the AI can also pick ceiling-fan speeds (up to two fans per zone) with
+    template-enforced limits, room-presence shutoff and manual-change protection.
     Install via HACS (custom_components/ai_hvac) then create one automation per thermostat.
   domain: automation
   author: Brandon Lord
@@ -109,7 +111,9 @@ blueprint:
     # --- Automation behavior ---
     automation_mode:
       name: Automation Mode
-      description: AUTOMATIC executes changes; MONITORED sends Approve/Reject/Override (requires notification handler blueprint)
+      description: >
+        AUTOMATIC executes changes; MONITORED sends Approve/Reject/Override (requires notification
+        handler blueprint). Fans are only moved in AUTOMATIC mode; in MONITORED they are logged only.
       default: automatic
       selector:
         select:
@@ -408,6 +412,209 @@ blueprint:
             - label: "Every 6 hours"
               value: "/6"
 
+    # ============================================================
+    # CEILING FANS (optional) — AI recommends speed, templates enforce
+    # limits. Leave both fan entities empty to disable all fan logic.
+    # ============================================================
+    fan_check_minutes:
+      name: Fan Check Interval
+      description: >
+        How often the AI re-evaluates the fans. These are fan-only runs: they never change the
+        thermostat. Only used when a fan entity is set below.
+      default: "30"
+      selector:
+        select:
+          options:
+            - label: "Every 10 minutes"
+              value: "10"
+            - label: "Every 15 minutes"
+              value: "15"
+            - label: "Every 20 minutes"
+              value: "20"
+            - label: "Every 30 minutes"
+              value: "30"
+
+    fan_a_entity:
+      name: Fan A — Fan
+      description: Ceiling fan entity (3-speed or percentage fan). Empty = slot unused.
+      default: ""
+      selector:
+        entity:
+          domain: fan
+
+    fan_a_name:
+      name: Fan A — Room Name
+      default: "Fan A"
+      selector:
+        text:
+
+    fan_a_presence:
+      name: Fan A — Room Presence (Optional)
+      description: >
+        Motion/occupancy sensor for the fan's room. The fan is turned off when the room is empty.
+        If empty, the zone/home occupancy is used.
+      default: ""
+      selector:
+        entity:
+
+    fan_a_temp_sensor:
+      name: Fan A — Room Temperature (Optional)
+      description: Room-level temperature for the AI. If empty, the zone indoor temperature is used.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+
+    fan_a_last_set_helper:
+      name: Fan A — Last-Set Helper (input_text)
+      description: >
+        input_text helper (max length 30 or more) where the advisor remembers the speed it last set.
+        Required for manual-change protection: without it the advisor cannot tell your changes
+        (buttons, Pico, other automations) from its own.
+      default: ""
+      selector:
+        entity:
+          domain: input_text
+
+    fan_b_entity:
+      name: Fan B — Fan
+      description: Second ceiling fan entity. Empty = slot unused.
+      default: ""
+      selector:
+        entity:
+          domain: fan
+
+    fan_b_name:
+      name: Fan B — Room Name
+      default: "Fan B"
+      selector:
+        text:
+
+    fan_b_presence:
+      name: Fan B — Room Presence (Optional)
+      default: ""
+      selector:
+        entity:
+
+    fan_b_temp_sensor:
+      name: Fan B — Room Temperature (Optional)
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+
+    fan_b_last_set_helper:
+      name: Fan B — Last-Set Helper (input_text)
+      default: ""
+      selector:
+        entity:
+          domain: input_text
+
+    fan_max_speed:
+      name: Fan Maximum Speed (Day)
+      description: Highest speed the AI may choose outside the night period.
+      default: high
+      selector:
+        select:
+          options:
+            - label: "Low"
+              value: "low"
+            - label: "Medium"
+              value: "medium"
+            - label: "High"
+              value: "high"
+
+    fan_night_max_speed:
+      name: Fan Maximum Speed (Night)
+      description: Highest speed during the night period (uses the Night Start/End hours above).
+      default: low
+      selector:
+        select:
+          options:
+            - label: "Low"
+              value: "low"
+            - label: "Medium"
+              value: "medium"
+            - label: "High"
+              value: "high"
+
+    fan_speed_low_pct:
+      name: Fan "Low" Percentage
+      default: 33
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+
+    fan_speed_medium_pct:
+      name: Fan "Medium" Percentage
+      default: 66
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+
+    fan_speed_high_pct:
+      name: Fan "High" Percentage
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+
+    fan_change_dwell_minutes:
+      name: Fan Minimum Time Between Changes (min)
+      description: Prevents speed flapping. Room-empty shutoff and night-cap reductions ignore this.
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 120
+          step: 1
+
+    fan_manual_override_minutes:
+      name: Manual Change Hold (min)
+      description: >
+        After a fan is changed by anything other than this advisor, the advisor leaves it alone for
+        this long. Needs the Last-Set Helper.
+      default: 120
+      selector:
+        number:
+          min: 10
+          max: 720
+          step: 5
+
+    fan_presence_hold_minutes:
+      name: Room Presence Hold (min)
+      description: >
+        A room still counts as occupied this long after its motion sensor clears. At night, a room
+        also counts as occupied if its sensor last changed since the evening (sleeping people do not move).
+      default: 45
+      selector:
+        number:
+          min: 5
+          max: 240
+          step: 5
+
+    fan_custom_rules:
+      name: Custom Fan Rules
+      description: Free-form rules for fan speed. Template-enforced limits (max speed, empty room off) still apply.
+      default: >
+        - Room warm (room temp above the comfort band): run the fan; use low just above the band,
+        medium when clearly warm, high only when well above the band.
+        - Room comfortable or cool: off or low. Never high.
+        - While the thermostat is heating, prefer off or low.
+        - Only change speed when one step is clearly justified; otherwise maintain.
+        - Keep bedrooms quiet at night.
+      selector:
+        text:
+          multiline: true
+
 mode: single
 max_exceeded: silent
 
@@ -452,11 +659,42 @@ variables:
   max_temp: !input max_temperature
   max_change: !input max_temp_change
   check_hours: !input check_interval_hours
+  fan_a: !input fan_a_entity
+  fan_a_label: !input fan_a_name
+  fan_a_presence: !input fan_a_presence
+  fan_a_temp: !input fan_a_temp_sensor
+  fan_a_helper: !input fan_a_last_set_helper
+  fan_b: !input fan_b_entity
+  fan_b_label: !input fan_b_name
+  fan_b_presence: !input fan_b_presence
+  fan_b_temp: !input fan_b_temp_sensor
+  fan_b_helper: !input fan_b_last_set_helper
+  fan_max: !input fan_max_speed
+  fan_night_max: !input fan_night_max_speed
+  fan_low_pct: !input fan_speed_low_pct
+  fan_med_pct: !input fan_speed_medium_pct
+  fan_high_pct: !input fan_speed_high_pct
+  fan_dwell: !input fan_change_dwell_minutes
+  fan_override_min: !input fan_manual_override_minutes
+  fan_presence_hold: !input fan_presence_hold_minutes
+  fan_rules: !input fan_custom_rules
+
+trigger_variables:
+  fan_a_trig: !input fan_a_entity
+  fan_b_trig: !input fan_b_entity
+  fan_every: !input fan_check_minutes
 
 trigger:
   - platform: time_pattern
     hours: !input check_interval_hours
     id: scheduled_check
+  # Fan-only check. A template trigger (re-evaluated every minute) so zones with no fan
+  # configured never fire it, and offset to minute :01 so it never collides with the hourly run.
+  - platform: template
+    value_template: >
+      {{ (fan_a_trig | string | trim != '' or fan_b_trig | string | trim != '')
+         and now().minute % (fan_every | int(30)) == 1 }}
+    id: fan_check
   - platform: state
     entity_id: !input occupancy_sensor
     to:
@@ -468,6 +706,9 @@ trigger:
 condition:
   - condition: template
     value_template: "{{ automation_mode != 'off' }}"
+  # Safety net: fan-only checks do nothing unless at least one fan is configured
+  - condition: template
+    value_template: "{{ trigger.id != 'fan_check' or fan_a | string | trim != '' or fan_b | string | trim != '' }}"
 
 action:
   - variables:
@@ -545,7 +786,8 @@ action:
           {% set night = ns > 0 and ((ne > 0 and ns > ne and (h >= ns or h < ne)) or (ne == 0 and h >= ns) or (ne > ns and h >= ns and h < ne)) %}
           {% if night and night_max | int > 0 %}{{ [base, night_max | float] | min }}{% else %}{{ base }}{% endif %}
         skip_ai: >
-          {% if not comfort_skip %}false
+          {% if trigger.id == 'fan_check' %}false
+          {% elif not comfort_skip %}false
           {% elif context.eco_mode_active %}false
           {% elif state_attr(thermostat, 'hvac_action') != 'idle' %}false
           {% elif context.feels_like_temp | float(0) < comfort_min | float %}false
@@ -553,6 +795,58 @@ action:
           {% else %}true{% endif %}
         high_humidity: >
           {{ dew_high | int > 0 and context.dew_point_f != 'N/A' and (context.dew_point_f | float(0)) > dew_high | int }}
+
+  # ---- Fan state snapshot (before the AI call) ----
+  # One entry per configured fan: current speed label, whether its room is occupied,
+  # whether someone changed it manually, and the highest speed allowed right now.
+  - variables:
+      fans_raw: >
+        {% set slots = [
+          {'id': 'A', 'entity': fan_a, 'name': fan_a_label, 'presence': fan_a_presence, 'temp': fan_a_temp, 'helper': fan_a_helper},
+          {'id': 'B', 'entity': fan_b, 'name': fan_b_label, 'presence': fan_b_presence, 'temp': fan_b_temp, 'helper': fan_b_helper}
+        ] %}
+        {% set lo = fan_low_pct | float(33) %}
+        {% set md = fan_med_pct | float(66) %}
+        {% set hi = fan_high_pct | float(100) %}
+        {% set night = policy.is_night | string | trim | lower == 'true' %}
+        {% set cap = fan_night_max if night else fan_max %}
+        {% set now_ts = as_timestamp(now()) %}
+        {% set ns = namespace(out=[]) %}
+        {% for s in slots if s.entity | string | trim != '' %}
+          {% set st = states(s.entity) %}
+          {% set obj = states[s.entity] %}
+          {% set pct = state_attr(s.entity, 'percentage') | float(0) %}
+          {% if st in ['unavailable', 'unknown'] %}{% set label = 'unavailable' %}
+          {% elif st != 'on' or pct <= 0 %}{% set label = 'off' %}
+          {% elif pct <= (lo + md) / 2 %}{% set label = 'low' %}
+          {% elif pct <= (md + hi) / 2 %}{% set label = 'medium' %}
+          {% else %}{% set label = 'high' %}{% endif %}
+          {% set age_min = ((now_ts - as_timestamp(obj.last_updated)) / 60) if obj is not none else 9999 %}
+          {% set hv = states(s.helper) if s.helper | string | trim != '' else '' %}
+          {% set set_label = hv.split('|')[0] if '|' in hv else '' %}
+          {% set override = s.helper | string | trim != '' and set_label != '' and label != 'unavailable' and label != set_label and age_min < (fan_override_min | float(120)) %}
+          {% if s.presence | string | trim != '' %}
+            {% set pobj = states[s.presence] %}
+            {% set on_now = states(s.presence) in ['on', 'home', 'occupied'] %}
+            {% set held = pobj is not none and (now_ts - as_timestamp(pobj.last_changed)) < (fan_presence_hold | float(45)) * 60 %}
+            {% set ns_h = night_start | int %}
+            {% set begin = today_at('%02d:00' % ns_h) if now().hour >= ns_h else today_at('%02d:00' % ns_h) - timedelta(days=1) %}
+            {% set held_night = night and pobj is not none and as_timestamp(pobj.last_changed) >= as_timestamp(begin) - 3600 %}
+            {% set room_occ = on_now or held or held_night %}
+          {% else %}
+            {% set room_occ = context.zone_occupied | string | trim | lower == 'true' %}
+          {% endif %}
+          {% set room_temp = (states(s.temp) | float(context.indoor_temp | float(70))) if s.temp | string | trim != '' else context.indoor_temp | float(70) %}
+          {% set ns.out = ns.out + [{
+            'id': s.id, 'name': s.name, 'entity': s.entity, 'helper': s.helper,
+            'label': label, 'occupied': 1 if room_occ else 0, 'override': 1 if override else 0,
+            'cap': cap, 'age_min': age_min | round(1), 'room_temp': room_temp | round(1)
+          }] %}
+        {% endfor %}
+        {{ ns.out | tojson }}
+
+  - variables:
+      fans: "{{ fans_raw if fans_raw is not string else fans_raw | from_json }}"
 
   - choose:
       - conditions:
@@ -607,6 +901,21 @@ action:
         CUSTOM RULES FOR THIS ZONE:
         {{ custom_rules }}
 
+        {% if fans | length > 0 -%}
+        CEILING FANS (you recommend a speed for each; limits are enforced in templates):
+        Comfort band (feels-like): {{ comfort_min }}–{{ comfort_max }}{{ temp_unit }}
+        {% for f in fans -%}
+        - FAN_{{ f.id }} "{{ f.name }}": now {{ f.label }}; room temp {{ f.room_temp }}{{ temp_unit }}; room {% if f.occupied == 1 %}occupied{% else %}EMPTY (it will be turned off){% endif %}{% if f.override == 1 %}; MANUALLY SET (answer maintain){% endif %}; highest allowed speed {{ f.cap }}
+        {% endfor -%}
+        Speeds: off, low, medium, high, or maintain (leave as is).
+        FAN RULES:
+        {{ fan_rules }}
+
+        {% endif -%}
+        {% if trigger.id == 'fan_check' -%}
+        THIS IS A FAN-ONLY CHECK. Do not recommend thermostat changes: answer ACTION: maintain, TARGET_TEMP: N/A, TARGET_MODE: N/A.
+
+        {% endif -%}
         RESPONSE FORMAT (exactly):
         ACTION: [maintain|adjust_temp|change_mode|turn_off]
         TARGET_TEMP: [number or N/A]
@@ -614,6 +923,12 @@ action:
         WHY: [one sentence]
         HOW: [one sentence]
         CONFIDENCE: [0-100]
+        {% for f in fans -%}
+        FAN_{{ f.id }}: [off|low|medium|high|maintain]
+        {% endfor -%}
+        {% if fans | length > 0 -%}
+        FAN_NOTE: [one sentence on the fan decisions]
+        {% endif %}
       agent_id: !input ai_agent
     response_variable: ai_response
 
@@ -638,6 +953,15 @@ action:
         confidence: >
           {% set lines = ai_text.split('\n') %}
           {% for line in lines %}{% if 'CONFIDENCE:' in line %}{{ line.split('CONFIDENCE:')[1].strip() }}{% endif %}{% endfor %}
+        fan_a: >
+          {% set lines = ai_text.split('\n') %}
+          {% for line in lines %}{% if 'FAN_A:' in line %}{{ line.split('FAN_A:')[1].strip().split(' ')[0] }}{% endif %}{% endfor %}
+        fan_b: >
+          {% set lines = ai_text.split('\n') %}
+          {% for line in lines %}{% if 'FAN_B:' in line %}{{ line.split('FAN_B:')[1].strip().split(' ')[0] }}{% endif %}{% endfor %}
+        fan_note: >
+          {% set lines = ai_text.split('\n') %}
+          {% for line in lines %}{% if 'FAN_NOTE:' in line %}{{ line.split('FAN_NOTE:')[1].strip() }}{% endif %}{% endfor %}
 
   - variables:
       safe:
@@ -663,17 +987,76 @@ action:
         how: "{{ parsed.how | default('') }}"
         confidence: "{{ parsed.confidence | default('') }}"
 
-  - service: logbook.log
-    data:
-      name: "AI HVAC ({{ zone_name }})"
-      message: >
-        {% if safe.action == 'maintain' %}No change — conditions OK
-        {% else %}Suggest {{ safe.action }} → {{ safe.temp }}{{ temp_unit }} {{ safe.mode }} | {{ safe.why }}{% if context.eco_mode_active %} | ECO{% endif %}{% endif %}
+  # ---- Fan decisions: AI proposal passed through hard limits ----
+  # Order of precedence: unavailable > manual change > empty room (off) > AI speed
+  # clamped to the day/night maximum > minimum dwell between changes.
+  - variables:
+      fan_actions_raw: >
+        {% set rank = {'off': 0, 'low': 1, 'medium': 2, 'high': 3} %}
+        {% set pcts = {'off': 0, 'low': fan_low_pct | float(33), 'medium': fan_med_pct | float(66), 'high': fan_high_pct | float(100)} %}
+        {% set ai = {'A': parsed.fan_a | string | trim | lower, 'B': parsed.fan_b | string | trim | lower} %}
+        {% set ns = namespace(out=[]) %}
+        {% for f in fans %}
+          {% set want = ai.get(f.id, 'maintain') %}
+          {% if want not in ['off', 'low', 'medium', 'high', 'maintain'] %}{% set want = 'maintain' %}{% endif %}
+          {% set cur = f.label %}
+          {% set action = 'none' %}
+          {% set tgt = cur %}
+          {% set reason = '' %}
+          {% if cur == 'unavailable' %}
+            {% set reason = 'hold: fan unavailable' %}
+          {% elif f.override | int(0) == 1 %}
+            {% set reason = 'hold: manual change detected' %}
+          {% elif f.occupied | int(0) == 0 %}
+            {% if cur != 'off' %}{% set action = 'set' %}{% set tgt = 'off' %}{% set reason = 'room empty' %}{% endif %}
+          {% else %}
+            {% set base = cur if want == 'maintain' else want %}
+            {% set tgt = base if rank[base] <= rank[f.cap] else f.cap %}
+            {% set forced = rank[cur] > rank[f.cap] %}
+            {% if tgt != cur %}
+              {% if f.age_min | float(9999) < fan_dwell | float(15) and not forced %}
+                {% set tgt = cur %}{% set reason = 'hold: changed recently' %}
+              {% else %}
+                {% set action = 'set' %}{% set reason = 'speed cap' if forced else 'AI' %}
+              {% endif %}
+            {% endif %}
+          {% endif %}
+          {% set ns.out = ns.out + [{
+            'id': f.id, 'name': f.name, 'entity': f.entity, 'helper': f.helper,
+            'prev': cur, 'to': tgt, 'action': action, 'pct': pcts.get(tgt, 0), 'reason': reason
+          }] %}
+        {% endfor %}
+        {{ ns.out | tojson }}
+
+  - variables:
+      fan_actions: "{{ fan_actions_raw if fan_actions_raw is not string else fan_actions_raw | from_json }}"
+
+  - variables:
+      fan_log: >
+        {% set ns = namespace(parts=[]) %}
+        {% for a in fan_actions %}
+          {% if a.action == 'set' or a.reason.startswith('hold') %}
+            {% set ns.parts = ns.parts + [a.name ~ ': ' ~ a.prev ~ ' → ' ~ a.to ~ ' (' ~ a.reason ~ ')'] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.parts | join(' | ') }}{% if ns.parts | length > 0 and parsed.fan_note | trim != '' %} — {{ parsed.fan_note | trim }}{% endif %}
+
+  # Thermostat summary log (skipped on fan-only checks)
+  - if:
+      - condition: template
+        value_template: "{{ trigger.id != 'fan_check' }}"
+    then:
+      - service: logbook.log
+        data:
+          name: "AI HVAC ({{ zone_name }})"
+          message: >
+            {% if safe.action == 'maintain' %}No change — conditions OK
+            {% else %}Suggest {{ safe.action }} → {{ safe.temp }}{{ temp_unit }} {{ safe.mode }} | {{ safe.why }}{% if context.eco_mode_active %} | ECO{% endif %}{% endif %}
 
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ safe.action == 'maintain' }}"
+            value_template: "{{ safe.action == 'maintain' or trigger.id == 'fan_check' }}"
         sequence: []
 
       - conditions:
@@ -744,3 +1127,47 @@ action:
             data:
               name: "AI HVAC ({{ zone_name }})"
               message: "Executed {{ safe.action }} → {{ safe.temp }}{{ temp_unit }} {{ safe.mode }}"
+
+  # ---- Apply fan changes (AUTOMATIC mode only; always logged) ----
+  - if:
+      - condition: template
+        value_template: "{{ fan_log | trim != '' }}"
+    then:
+      - service: logbook.log
+        data:
+          name: "AI HVAC ({{ zone_name }}) fans"
+          message: "{{ fan_log | trim }}{% if automation_mode != 'automatic' %} [not applied: {{ automation_mode }} mode]{% endif %}"
+  - if:
+      - condition: template
+        value_template: "{{ automation_mode == 'automatic' and fan_actions | length > 0 }}"
+    then:
+      - repeat:
+          for_each: "{{ fan_actions }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: "{{ repeat.item.action == 'set' }}"
+              then:
+                - if:
+                    - condition: template
+                      value_template: "{{ repeat.item.to == 'off' }}"
+                  then:
+                    - service: fan.turn_off
+                      target:
+                        entity_id: "{{ repeat.item.entity }}"
+                  else:
+                    - service: fan.turn_on
+                      target:
+                        entity_id: "{{ repeat.item.entity }}"
+                      data:
+                        percentage: "{{ repeat.item.pct | int }}"
+                # Remember what we set so a later difference is recognised as a manual change
+                - if:
+                    - condition: template
+                      value_template: "{{ repeat.item.helper | string | trim != '' }}"
+                  then:
+                    - service: input_text.set_value
+                      target:
+                        entity_id: "{{ repeat.item.helper }}"
+                      data:
+                        value: "{{ repeat.item.to }}|{{ as_timestamp(now()) | int }}"
